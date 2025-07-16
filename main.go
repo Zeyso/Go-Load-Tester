@@ -62,6 +62,12 @@ type ProxyError struct {
 	Err       error
 }
 
+type ProxyTestResult struct {
+	Proxy   ProxyConfig
+	Success bool
+	Error   error
+}
+
 func (pe *ProxyError) Error() string {
 	return fmt.Sprintf("Proxy %s (%s): %s - %v", pe.ProxyAddr, pe.Protocol, pe.Message, pe.Err)
 }
@@ -458,6 +464,78 @@ func configureProxies() ([]ProxyConfig, bool) {
 	return proxies, useRotating
 }
 
+func testProxiesParallel(proxies []ProxyConfig, maxWorkers int) ([]ProxyConfig, []ProxyConfig, []string) {
+	if len(proxies) == 0 {
+		return []ProxyConfig{}, []ProxyConfig{}, []string{}
+	}
+
+	// Anzahl der Worker bestimmen
+	workers := maxWorkers
+	if len(proxies) < workers {
+		workers = len(proxies)
+	}
+
+	// Channels für die Kommunikation
+	proxyQueue := make(chan ProxyConfig, len(proxies))
+	resultQueue := make(chan ProxyTestResult, len(proxies))
+	var wg sync.WaitGroup
+
+	// Worker starten
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for proxy := range proxyQueue {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				err := testSingleProxy(ctx, proxy)
+				cancel()
+
+				resultQueue <- ProxyTestResult{
+					Proxy:   proxy,
+					Success: err == nil,
+					Error:   err,
+				}
+			}
+		}()
+	}
+
+	// Proxys in die Queue einreihen
+	for _, proxy := range proxies {
+		proxyQueue <- proxy
+	}
+	close(proxyQueue)
+
+	// Worker abwarten
+	go func() {
+		wg.Wait()
+		close(resultQueue)
+	}()
+
+	// Ergebnisse sammeln
+	var working []ProxyConfig
+	var failed []ProxyConfig
+	var errors []string
+	var completed int
+
+	for result := range resultQueue {
+		completed++
+
+		// Live-Progress anzeigen
+		fmt.Printf("\r✅ Test %d/%d abgeschlossen...", completed, len(proxies))
+
+		if result.Success {
+			working = append(working, result.Proxy)
+		} else {
+			failed = append(failed, result.Proxy)
+			errors = append(errors, fmt.Sprintf("%s:%s - %v",
+				result.Proxy.Host, result.Proxy.Port, result.Error))
+		}
+	}
+
+	fmt.Printf("\r%s\n", strings.Repeat(" ", 50)) // Clear progress line
+	return working, failed, errors
+}
+
 func testAndManageProxies() []ProxyConfig {
 	configFile := "proxy_config.json"
 
@@ -478,29 +556,16 @@ func testAndManageProxies() []ProxyConfig {
 	}
 
 	fmt.Printf("%d gespeicherte Proxys gefunden\n", len(proxies))
-	fmt.Println("\nTeste alle Proxys...")
 
-	var working []ProxyConfig
-	var failed []ProxyConfig
-	var errors []string
-
-	for i, proxy := range proxies {
-		fmt.Printf("Test %d/%d: %s://%s:%s ... ",
-			i+1, len(proxies), proxy.Protocol, proxy.Host, proxy.Port)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := testSingleProxy(ctx, proxy)
-		cancel()
-
-		if err != nil {
-			fmt.Println("❌ FEHLER")
-			failed = append(failed, proxy)
-			errors = append(errors, fmt.Sprintf("%s:%s - %v", proxy.Host, proxy.Port, err))
-		} else {
-			fmt.Println("✅ OK")
-			working = append(working, proxy)
-		}
+	// Worker-Anzahl bestimmen
+	workers := 20
+	if len(proxies) < workers {
+		workers = len(proxies)
 	}
+
+	fmt.Printf("Teste alle Proxys mit %d parallelen Verbindungen...\n", workers)
+
+	working, failed, errors := testProxiesParallel(proxies, workers)
 
 	fmt.Printf("\nTESTERGEBNISSE\n")
 	fmt.Println(strings.Repeat("-", 20))
@@ -701,27 +766,15 @@ func testProxies(proxies []ProxyConfig) []ProxyConfig {
 	fmt.Println("\nPROXY VERBINDUNGSTEST")
 	fmt.Println(strings.Repeat("-", 35))
 
-	var working []ProxyConfig
-	var failed []ProxyConfig
-	var errors []string
-
-	for i, proxy := range proxies {
-		fmt.Printf("Test %d/%d: %s://%s:%s ... ",
-			i+1, len(proxies), proxy.Protocol, proxy.Host, proxy.Port)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := testSingleProxy(ctx, proxy)
-		cancel()
-
-		if err != nil {
-			fmt.Println("❌ FEHLER")
-			failed = append(failed, proxy)
-			errors = append(errors, fmt.Sprintf("%s:%s - %v", proxy.Host, proxy.Port, err))
-		} else {
-			fmt.Println("✅ OK")
-			working = append(working, proxy)
-		}
+	// Worker-Anzahl bestimmen
+	workers := 20
+	if len(proxies) < workers {
+		workers = len(proxies)
 	}
+
+	fmt.Printf("Teste %d Proxys mit %d parallelen Verbindungen...\n", len(proxies), workers)
+
+	working, failed, errors := testProxiesParallel(proxies, workers)
 
 	fmt.Printf("\nTESTERGEBNISSE\n")
 	fmt.Println(strings.Repeat("-", 20))
