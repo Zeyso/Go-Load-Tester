@@ -41,7 +41,7 @@ Ein leistungsstarker Load-Testing-Tool für Server, der über verschiedene Proxy
 
 ### Setup
 ```bash
-git clone <repository-url>
+git clone [<repository-url>](https://github.com/Zeyso/Go-Load-Tester)
 cd go-load-tester
 go mod init load-tester
 go mod tidy
