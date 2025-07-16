@@ -1,4 +1,4 @@
-```markdown
+
 # Go Load Tester
 
 Ein leistungsstarker Load-Testing-Tool für Server, der über verschiedene Proxy-Typen arbeiten kann. Das Tool unterstützt TCP-Ping-Tests über SOCKS5, SOCKS4, HTTP und HTTPS Proxys mit flexibler Konfiguration und ausführlicher Statistik.
