@@ -366,6 +366,7 @@ Bei Problemen oder Fragen:
 - Öffne ein Issue im Repository
 - Überprüfe die Troubleshooting-Sektion
 - Teste mit verschiedenen Proxy-Typen
+- Kontaktiere zgodlike auf Discord
 
 ---
 
