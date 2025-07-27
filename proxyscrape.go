@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,11 @@ type AlternativeProxyData struct {
 	IP       string `json:"ip"`
 	Port     string `json:"port"`
 	Protocol string `json:"protocol"`
+}
+
+// Config-Struktur für verschiedene JSON-Formate
+type ConfigFile struct {
+	Proxies []ProxyConfig `json:"proxies,omitempty"`
 }
 
 func configureProxyScrape() []ProxyConfig {
@@ -107,16 +113,94 @@ func configureProxyScrape() []ProxyConfig {
 		proxies = working
 	}
 
-	// Automatisch speichern
+	// Automatisch speichern mit Duplikatsprüfung
 	configFile := "proxy_config.json"
-	err = saveProxiesToFile(proxies, configFile)
+	newProxies, err := saveProxiesToFileWithDuplicateCheck(proxies, configFile)
 	if err != nil {
 		fmt.Printf("Warnung: Konnte Proxys nicht speichern: %v\n", err)
 	} else {
-		fmt.Printf("Proxys automatisch in %s gespeichert\n", configFile)
+		fmt.Printf("%d neue Proxys in %s gespeichert (%d Duplikate übersprungen)\n",
+			newProxies, configFile, len(proxies)-newProxies)
 	}
 
 	return proxies
+}
+
+func saveProxiesToFileWithDuplicateCheck(newProxies []ProxyConfig, filename string) (int, error) {
+	// Existierende Proxys laden
+	existingProxies, err := loadExistingProxies(filename)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("fehler beim Laden existierender Proxys: %w", err)
+	}
+
+	// Set für schnelle Duplikatsprüfung erstellen
+	existingSet := make(map[string]bool)
+	for _, proxy := range existingProxies {
+		key := fmt.Sprintf("%s:%s:%s", proxy.Host, proxy.Port, proxy.Protocol)
+		existingSet[key] = true
+	}
+
+	// Nur neue Proxys hinzufügen
+	addedCount := 0
+
+	for _, proxy := range newProxies {
+		key := fmt.Sprintf("%s:%s:%s", proxy.Host, proxy.Port, proxy.Protocol)
+		if !existingSet[key] {
+			existingProxies = append(existingProxies, proxy)
+			existingSet[key] = true
+			addedCount++
+		}
+	}
+
+	// Alle Proxys speichern
+	err = saveProxiesToFile(existingProxies, filename)
+	if err != nil {
+		return 0, err
+	}
+
+	return addedCount, nil
+}
+
+func loadExistingProxies(filename string) ([]ProxyConfig, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return []ProxyConfig{}, err
+	}
+
+	// Versuche verschiedene JSON-Formate
+	var proxies []ProxyConfig
+
+	// Format 1: Direktes Array
+	err = json.Unmarshal(data, &proxies)
+	if err == nil {
+		return proxies, nil
+	}
+
+	// Format 2: Objekt mit "proxies" Field
+	var config ConfigFile
+	err = json.Unmarshal(data, &config)
+	if err == nil && config.Proxies != nil {
+		return config.Proxies, nil
+	}
+
+	// Format 3: Objekt mit beliebigen Feldern - versuche alle Werte zu extrahieren
+	var configMap map[string]interface{}
+	err = json.Unmarshal(data, &configMap)
+	if err == nil {
+		// Suche nach Array-Feldern die ProxyConfig enthalten könnten
+		for _, value := range configMap {
+			if arr, ok := value.([]interface{}); ok {
+				// Versuche das Array als ProxyConfig zu parsen
+				arrBytes, _ := json.Marshal(arr)
+				var tempProxies []ProxyConfig
+				if json.Unmarshal(arrBytes, &tempProxies) == nil && len(tempProxies) > 0 {
+					return tempProxies, nil
+				}
+			}
+		}
+	}
+
+	return []ProxyConfig{}, fmt.Errorf("unbekanntes JSON-Format in Datei %s", filename)
 }
 
 func downloadProxiesFromAPI(apiURL, preferredProtocol string) ([]ProxyConfig, error) {

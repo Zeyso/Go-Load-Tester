@@ -129,50 +129,79 @@ func runMinecraftPinger() {
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Minecraft-Flooder erstellen
-	flooder := NewMinecraftFlooder(servers, proxies, useRotating, concurrency, rps, duration, floodType)
+	flooder := NewMinecraftFlooder(servers, proxies, useRotating, concurrency, duration, floodType)
 	flooder.Start()
 }
 
 func selectFloodType() string {
 	fmt.Println("\nFLOOD-TYP AUSWAHL")
 	fmt.Println(strings.Repeat("-", 30))
-	fmt.Println("1. ultrajoin - Ultra Join Attack")
-	fmt.Println("2. multikiller - Multi Protocol Attack")
-	fmt.Println("3. fakejoin - Fake Join Attack")
-	fmt.Println("4. motdkiller - MOTD Killer")
-	fmt.Println("5. cpulagger - CPU Lag Attack")
-	fmt.Println("6. botfucker - Bot Attack")
-	fmt.Println("7. joinbots - Join Bot Spam")
-	fmt.Println("8. fastjoin - Fast Join Attack")
-	fmt.Println("9. destroyer - Destroyer Attack")
-	fmt.Println("10. aegiskiller - Aegis Killer")
-	fmt.Println("11. 2lsbypass - 2LS Bypass")
-	fmt.Println("12. cpuRipper - CPU Ripper")
-	fmt.Println("13. byte - Byte Attack")
-	fmt.Println("14. flood - Standard Flood")
-	fmt.Println("15. legacy_motd - Legacy MOTD")
+	// Anzeige der Optionen in Kategorien
+	fmt.Println("  1. Localhost Attack")
+	fmt.Println("  2. Name Null Ping")
+	fmt.Println("  3. Boss Handler")
+	fmt.Println("  4. Fake Premium Join")
+	fmt.Println("  5. Bot Null Ping")
+	fmt.Println("  6. Ultra Join")
+	fmt.Println("  7. UFO Attack")
+	fmt.Println("  8. nAntibot")
+	fmt.Println("  9. 2LS Bypass")
+	fmt.Println("  10. Multi Killer")
+	fmt.Println("  11. Aegis Killer")
+	fmt.Println("  12. CPU Lagger")
+	fmt.Println("  13. Destroyer")
+	fmt.Println("  14. ID Error")
+	fmt.Println("  15. Fake Host")
+	fmt.Println("  16. Pro Auth Killer")
+	fmt.Println("  17. Standard Flood")
+	fmt.Println("  18. Join Bots")
+	fmt.Println("  19. Bot Fucker")
+	fmt.Println("  20. Consola")
+	fmt.Println("  21. Paola")
+	fmt.Println("  22. TimeOut Killer")
+	fmt.Println("  23. CPU Burner 6")
+	fmt.Println("  24. CPU Ripper")
+	fmt.Println("  25. Fake Join")
+	fmt.Println("  26. Fast Join")
+	fmt.Println("  27. MOTD Killer")
+	fmt.Println("  28. Legacy MOTD")
+	fmt.Println("  29. Byte Attack")
 
 	floodTypes := map[string]string{
-		"1":  "ultrajoin",
-		"2":  "multikiller",
-		"3":  "fakejoin",
-		"4":  "motdkiller",
-		"5":  "cpulagger",
-		"6":  "botfucker",
-		"7":  "joinbots",
-		"8":  "fastjoin",
-		"9":  "destroyer",
-		"10": "aegiskiller",
-		"11": "2lsbypass",
-		"12": "cpuRipper",
-		"13": "byte",
-		"14": "flood",
-		"15": "legacy_motd",
+		"1":  "localhost",
+		"2":  "namenullping",
+		"3":  "bosshandler",
+		"4":  "fakepremium_join",
+		"5":  "botnullping",
+		"6":  "ultrajoin",
+		"7":  "ufo",
+		"8":  "nAntibot",
+		"9":  "2lsbypass",
+		"10": "multikiller",
+		"11": "aegiskiller",
+		"12": "cpulagger",
+		"13": "destroyer",
+		"14": "IDERROR",
+		"15": "fakehost",
+		"16": "proauthkiller",
+		"17": "flood",
+		"18": "joinbots",
+		"19": "botfucker",
+		"20": "consola",
+		"21": "paola",
+		"22": "TimeOutKiller",
+		"23": "cpuburner6",
+		"24": "cpuRipper",
+		"25": "fakejoin",
+		"26": "fastjoin",
+		"27": "motdkiller",
+		"28": "legacy_motd",
+		"29": "byte",
 	}
 
-	choice := promptUser("Wähle Flood-Typ (1-15) [1]: ")
+	choice := promptUser("Wähle Flood-Typ (1-15) [6]: ")
 	if choice == "" {
-		choice = "1"
+		choice = "6"
 	}
 
 	if floodType, exists := floodTypes[choice]; exists {
