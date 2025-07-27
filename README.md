@@ -108,13 +108,15 @@ go get golang.org/x/net/proxy
 ```
 
 # Interaktive Konfiguration
+```bash
 ./load-tester
-
-# Wähle "Minecraft Flooder" aus dem Hauptmenü
-# Konfiguriere Zielserver (z.B. hypixel.net:25565)
-# Wähle Flood-Typ aus 29 verfügbaren Methoden
-# Konfiguriere Worker und Dauer
-
+```
+```
+Wähle "Minecraft Flooder" aus dem Hauptmenü
+Konfiguriere Zielserver (z.B. hypixel.net:25565)
+Wähle Flood-Typ aus 29 verfügbaren Methoden
+Konfiguriere Worker und Dauer
+```
 ### Proxy-Konfiguration
 
 #### 1. Aus Datei laden
