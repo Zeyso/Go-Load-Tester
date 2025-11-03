@@ -11,6 +11,51 @@ Ein leistungsstarker Load-Testing-Tool für Server, der über verschiedene Proxy
 - **HTTP/HTTPS** Proxy Support
 - **Rotating Proxys** für verteilte Last
 - **Statische Proxys** für konsistente Tests
+- **ProxyScrape Integration** für automatischen Proxy-Download
+
+### 🎮 Minecraft Flooder Modi
+Das Tool bietet 29 spezialisierte Minecraft-Angriffsmethoden:
+
+#### Basis-Angriffe
+1. **joinFlood** - Standard Join-Spam mit zufälligen Benutzernamen
+2. **standardFlood** - Standard Ping-Flood für Server-Listen
+3. **legacyMotdAttack** - Legacy Server List Ping (ältere Versionen)
+4. **motdFlood** - MOTD-basierte Überlastung
+
+#### Erweiterte Protokoll-Angriffe
+5. **bigPacketFlood** - Große Pakete für Memory-Exhaustion
+6. **invalidPacketFlood** - Ungültige Pakete für Crash-Tests
+7. **invalidDataFlood** - Korrupte Datenstrukturen
+8. **multiPacketFlood** - Mehrfach-Paket-Bombardierung
+9. **smartFlood** - Intelligente Protokoll-Analyse
+10. **randomPacketFlood** - Zufällige Paket-Generation
+
+#### Spezialisierte Bypass-Methoden
+11. **botJoinerFlood** - Anti-Bot-System Umgehung
+12. **fakeJoinAttack** - Simulierte Join-Versuche
+13. **motdKillerAttack** - MOTD-Service Überlastung
+14. **ultraJoinAttack** - Ultra-schnelle Join-Versuche
+15. **fastJoinAttack** - Schnelle Verbindungsaufbau-Tests
+16. **aegisKillerAttack** - Anti-Bot-Bypass mit realistischen Mustern
+17. **twoLSBypassAttack** - Two Login States Bypass-Technik
+
+#### Performance-Killer
+18. **cpuRipperAttack** - CPU-intensive Paket-Verarbeitung
+19. **ramKillerFlood** - Memory-Exhaustion Angriffe
+20. **networkFlood** - Netzwerk-Bandbreiten-Sättigung
+21. **handshakeFlood** - Handshake-Protokoll Überlastung
+
+#### Low-Level Angriffe
+22. **byteAttack** - Raw-Byte-Flooding
+23. **rawSocketFlood** - Socket-Level Angriffe
+24. **tcpFlood** - TCP-Connection Flooding
+25. **connectionFlood** - Verbindungs-Exhaustion
+
+#### Kombinierte Angriffe
+26. **destroyerAttack** - Kombiniert mehrere Angriffsvektoren
+27. **hybridFlood** - Hybrid aus verschiedenen Techniken
+28. **adaptiveFlood** - Adaptive Angriffserkennung
+29. **ultimateFlood** - Vollständiger Multi-Vektor-Angriff
 
 ### 📊 Test-Modi
 - **Direkte Verbindung** ohne Proxy
@@ -25,6 +70,7 @@ Ein leistungsstarker Load-Testing-Tool für Server, der über verschiedene Proxy
 - **Proxy-Gesundheitstests** mit Fehlerbereinigung
 - **Manuelle Proxy-Konfiguration**
 - **Batch-Import** über URL-Listen
+- **ProxyScrape API Integration**
 
 ### 📈 Statistiken & Monitoring
 - **Live-Statistiken** während des Tests
@@ -32,6 +78,7 @@ Ein leistungsstarker Load-Testing-Tool für Server, der über verschiedene Proxy
 - **Durchschnittliche Antwortzeiten**
 - **Erfolgs-/Fehlerquoten** in Echtzeit
 - **Proxy-Protokoll-Verteilung**
+- **Minecraft-spezifische Metriken**
 
 ## Installation
 
@@ -45,7 +92,7 @@ git clone <repository-url>
 cd go-load-tester
 go mod init load-tester
 go mod tidy
-go build -o load-tester main.go
+go build -o load-tester *.go
 ```
 
 ### Dependencies
@@ -60,7 +107,13 @@ go get golang.org/x/net/proxy
 ./load-tester
 ```
 
-Das Programm führt Sie durch ein interaktives Menü zur Konfiguration.
+# Interaktive Konfiguration
+./load-tester
+
+# Wähle "Minecraft Flooder" aus dem Hauptmenü
+# Konfiguriere Zielserver (z.B. hypixel.net:25565)
+# Wähle Flood-Typ aus 29 verfügbaren Methoden
+# Konfiguriere Worker und Dauer
 
 ### Proxy-Konfiguration
 
@@ -107,7 +160,14 @@ socks5://user:pass@proxy2.com:1080
 http://proxy3.com:8080
 # Leere Zeile zum Beenden
 ```
-
+### 4. ProxyScrape Integration
+```bash
+# Automatischer Download von Proxys
+# Wähle ProxyScrape als Quelle
+# Konfiguriere Filter (z.B. nur SOCKS5)
+# Proxys werden automatisch getestet und gespeichert
+# Automatische Duplikatsprüfung
+```
 ### Server-Konfiguration
 ```
 Zielserver: gommehd.net:80
@@ -122,6 +182,7 @@ Testdauer: 30 Sekunden
 - Verwendet nur den ersten verfügbaren Proxy
 - Konsistente IP-Adresse für alle Requests
 - Gut für Debugging und spezifische Tests
+- Sollte für Proxys mit Auth verwendet werden
 
 #### Rotating Modus
 - Wechselt automatisch zwischen allen Proxys
@@ -159,6 +220,17 @@ Menüoption "6. Gespeicherte Proxys testen":
 Requests: 45 | Erfolg: 42 (93.3%) | Fehler: 3 (6.7%)
 ============================================================
 ```
+```
+============================================================
+MINECRAFT FLOODER - LIVE STATS
+============================================================
+Flood-Typ: ultimateFlood
+Ziel: hypixel.net:25565
+Floods: 1250 | Erfolg: 1180 (94.4%) | Fehler: 70 (5.6%)
+Floods/Sekunde: 52.3
+Aktive Worker: 500
+============================================================
+```
 
 ### Finale Statistiken
 ```
@@ -178,7 +250,24 @@ FEHLER-VERTEILUNG:
   connection_refused: 10 (12.5%)
   proxy_error: 5 (6.3%)
 ```
+```
+============================================================
+MINECRAFT FLOODER STATISTIKEN
+============================================================
+Ziel-Server: 1 Server
+Flood-Typ: ultimateFlood
+Testdauer: 1m0s
+Gesamt Floods: 3000
+Erfolgreiche Floods: 2850 (95.00%)
+Fehlgeschlagene Floods: 150 (5.00%)
+Floods/Sekunde: 50.00
 
+FEHLER-VERTEILUNG:
+connection_timeout: 120 (80.0%)
+protocol_error: 20 (13.3%)
+proxy_error: 10 (6.7%)
+============================================================
+```
 ## Konfigurationsdateien
 
 ### proxy_config.json
