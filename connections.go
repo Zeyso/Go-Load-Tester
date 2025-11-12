@@ -41,18 +41,17 @@ func (lt *LoadTester) connectViaSocks5(ctx context.Context, proxyConfig ProxyCon
 		return &ProxyError{
 			ProxyAddr: proxyAddr,
 			Protocol:  proxyConfig.Protocol,
-			Message:   "SOCKS5-Dialer konnte nicht erstellt werden",
+			Message:   "SOCKS5 dialer erstellen fehlgeschlagen",
 			Err:       err,
 		}
 	}
 
-	conn, err := lt.dialWithContext(ctx, dialer, "tcp", lt.targetServer)
+	conn, err := dialWithContext(ctx, dialer, "tcp", lt.targetServer)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	// Einfacher TCP-Ping (wie in deinem Beispiel)
 	return nil
 }
 
@@ -71,18 +70,17 @@ func (lt *LoadTester) connectViaSocks4(ctx context.Context, proxyConfig ProxyCon
 		return &ProxyError{
 			ProxyAddr: proxyAddr,
 			Protocol:  proxyConfig.Protocol,
-			Message:   "SOCKS4-Dialer konnte nicht erstellt werden",
+			Message:   "SOCKS4 dialer erstellen fehlgeschlagen",
 			Err:       err,
 		}
 	}
 
-	conn, err := lt.dialWithContext(ctx, dialer, "tcp", lt.targetServer)
+	conn, err := dialWithContext(ctx, dialer, "tcp", lt.targetServer)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	// Einfacher TCP-Ping
 	return nil
 }
 
@@ -102,8 +100,7 @@ func (lt *LoadTester) connectViaHTTP(ctx context.Context, proxyConfig ProxyConfi
 			InsecureSkipVerify: true,
 		},
 		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 5 * time.Second,
+			Timeout: 10 * time.Second,
 		}).DialContext,
 	}
 
@@ -112,44 +109,46 @@ func (lt *LoadTester) connectViaHTTP(ctx context.Context, proxyConfig ProxyConfi
 		Timeout:   10 * time.Second,
 	}
 
-	resp, err := client.Get("http://httpbin.org/ip")
+	targetURL := fmt.Sprintf("http://%s", lt.targetServer)
+	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
 	if err != nil {
 		return &ProxyError{
 			ProxyAddr: proxyURL.Host,
 			Protocol:  proxyConfig.Protocol,
-			Message:   "HTTP-Request über Proxy fehlgeschlagen",
+			Message:   "HTTP Request erstellen fehlgeschlagen",
+			Err:       err,
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return &ProxyError{
+			ProxyAddr: proxyURL.Host,
+			Protocol:  proxyConfig.Protocol,
+			Message:   fmt.Sprintf("HTTP Request fehlgeschlagen"),
 			Err:       err,
 		}
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return &ProxyError{
-			ProxyAddr: proxyURL.Host,
-			Protocol:  proxyConfig.Protocol,
-			Message:   fmt.Sprintf("HTTP-Fehler: Status %d", resp.StatusCode),
-			Err:       nil,
-		}
-	}
-
 	return nil
 }
 
 func (lt *LoadTester) connectDirect(ctx context.Context) error {
-	var d net.Dialer
-	d.Timeout = 5 * time.Second
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
 
-	conn, err := d.DialContext(ctx, "tcp", lt.targetServer)
+	conn, err := dialer.DialContext(ctx, "tcp", lt.targetServer)
 	if err != nil {
-		return fmt.Errorf("direkte Verbindung fehlgeschlagen: %w", err)
+		return err
 	}
 	defer conn.Close()
 
-	// Einfacher TCP-Ping
 	return nil
 }
 
-func (lt *LoadTester) dialWithContext(ctx context.Context, dialer proxy.Dialer, network, address string) (net.Conn, error) {
+func dialWithContext(ctx context.Context, dialer proxy.Dialer, network, address string) (net.Conn, error) {
 	type result struct {
 		conn net.Conn
 		err  error
@@ -173,7 +172,7 @@ func (lt *LoadTester) dialWithContext(ctx context.Context, dialer proxy.Dialer, 
 	case res := <-ch:
 		return res.conn, res.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("Verbindungs-Timeout: %w", ctx.Err())
+		return nil, fmt.Errorf("verbindungs-timeout: %w", ctx.Err())
 	}
 }
 
@@ -182,24 +181,25 @@ func categorizeError(err error) string {
 		return "unknown"
 	}
 
-	errStr := strings.ToLower(err.Error())
+	errStr := err.Error()
 
 	switch {
 	case strings.Contains(errStr, "timeout"):
 		return "timeout"
 	case strings.Contains(errStr, "connection refused"):
 		return "connection_refused"
-	case strings.Contains(errStr, "no route to host"):
-		return "no_route"
-	case strings.Contains(errStr, "network unreachable"):
-		return "network_unreachable"
-	case strings.Contains(errStr, "authentication"):
-		return "auth_failed"
+	case strings.Contains(errStr, "no such host"):
+		return "dns_error"
 	case strings.Contains(errStr, "proxy"):
 		return "proxy_error"
-	case strings.Contains(errStr, "dns"):
-		return "dns_error"
+	case strings.Contains(errStr, "EOF"):
+		return "eof_error"
+	case strings.Contains(errStr, "network"):
+		return "network_error"
 	default:
-		return "other"
+		if len(errStr) > 50 {
+			return errStr[:50]
+		}
+		return errStr
 	}
 }

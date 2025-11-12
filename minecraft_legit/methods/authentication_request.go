@@ -1,8 +1,6 @@
 package methods
 
 import (
-	"bytes"
-	"encoding/binary"
 	"net"
 )
 

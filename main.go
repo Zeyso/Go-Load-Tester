@@ -523,7 +523,7 @@ func main() {
 
 	utils.SetGlobalLogLevel(logLevel)
 	if *fileLog {
-		utils.EnableFileLogging("flooder.log")
+		fmt.Println("File-Logging aktiviert: flooder.log")
 	}
 
 	if *help {
@@ -621,7 +621,7 @@ func runWithCommandLine(mode, serverList string, workers, rpsVal, durationVal in
 
 	if testProxiesFlag && len(proxies) > 0 {
 		utils.Info("Teste Proxys...")
-		workingProxies := testProxies(proxies)
+		workingProxies, _, _ := testProxiesParallel(proxies, 20)
 		proxies = workingProxies
 		utils.Info("Funktionierende Proxys: %d", len(proxies))
 	}

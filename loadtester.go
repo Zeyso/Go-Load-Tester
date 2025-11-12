@@ -49,7 +49,7 @@ func (lt *LoadTester) getErrorStats() map[string]int64 {
 	return stats
 }
 
-func (lt *LoadTester) AddProxy(host, port, username, password, proxyType, protocol string) error {
+func (lt *LoadTester) AddProxy(host, port, protocol, username, password string) error {
 	if host == "" {
 		return fmt.Errorf("host ist erforderlich")
 	}
@@ -79,12 +79,11 @@ func (lt *LoadTester) AddProxy(host, port, username, password, proxyType, protoc
 		Port:     port,
 		Username: username,
 		Password: password,
-		Type:     proxyType,
 		Protocol: protocol,
+		Type:     "rotating",
 	})
 	return nil
 }
-
 func (lt *LoadTester) getNextProxy() ProxyConfig {
 	if len(lt.proxies) == 0 {
 		return ProxyConfig{}
@@ -221,4 +220,51 @@ func (lt *LoadTester) performDirectRequest(ctx context.Context) {
 	} else {
 		atomic.AddInt64(&lt.successRequests, 1)
 	}
+
+}
+func (lt *LoadTester) printLiveStats(ctx context.Context, ticker <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker:
+			total := atomic.LoadInt64(&lt.totalRequests)
+			success := atomic.LoadInt64(&lt.successRequests)
+			failed := atomic.LoadInt64(&lt.failedRequests)
+
+			if total > 0 {
+				successRate := float64(success) / float64(total) * 100
+				fmt.Printf("\r[Live] Requests: %d | Success: %d (%.1f%%) | Failed: %d",
+					total, success, successRate, failed)
+			}
+		}
+	}
+}
+
+func (lt *LoadTester) printFinalStats() {
+	total := atomic.LoadInt64(&lt.totalRequests)
+	success := atomic.LoadInt64(&lt.successRequests)
+	failed := atomic.LoadInt64(&lt.failedRequests)
+	avgTime := atomic.LoadInt64(&lt.avgResponseTime)
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("FINALE STATISTIKEN")
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Printf("Gesamt Requests:        %d\n", total)
+	fmt.Printf("Erfolgreiche Requests:  %d (%.2f%%)\n", success, float64(success)/float64(total)*100)
+	fmt.Printf("Fehlgeschlagene:        %d (%.2f%%)\n", failed, float64(failed)/float64(total)*100)
+
+	if total > 0 {
+		fmt.Printf("Durchschn. Antwortzeit: %dms\n", avgTime/total)
+	}
+
+	errorStats := lt.getErrorStats()
+	if len(errorStats) > 0 {
+		fmt.Println("\nFEHLER-ÜBERSICHT:")
+		for errType, count := range errorStats {
+			percentage := float64(count) / float64(failed) * 100
+			fmt.Printf("  %-30s: %d (%.1f%%)\n", errType, count, percentage)
+		}
+	}
+	fmt.Println(strings.Repeat("=", 60))
 }

@@ -6,19 +6,18 @@ import (
 	"io/ioutil"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 )
 
 func parseProxyURL(proxyURL string) (ProxyConfig, error) {
 	if proxyURL == "" {
-		return ProxyConfig{}, fmt.Errorf("leere proxy-URL")
+		return ProxyConfig{}, fmt.Errorf("leere proxy-url")
 	}
 
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		return ProxyConfig{}, fmt.Errorf("ungültige URL: %w", err)
+		return ProxyConfig{}, fmt.Errorf("ungültige proxy-url: %w", err)
 	}
 
 	supportedSchemes := map[string]bool{
@@ -29,64 +28,57 @@ func parseProxyURL(proxyURL string) (ProxyConfig, error) {
 	}
 
 	if !supportedSchemes[u.Scheme] {
-		return ProxyConfig{}, fmt.Errorf("nicht unterstütztes Schema: %s", u.Scheme)
-	}
-
-	if u.Host == "" {
-		return ProxyConfig{}, fmt.Errorf("fehlender host in URL")
+		return ProxyConfig{}, fmt.Errorf("nicht unterstütztes protokoll: %s", u.Scheme)
 	}
 
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
-		return ProxyConfig{}, fmt.Errorf("ungültiger host:port: %w", err)
+		return ProxyConfig{}, fmt.Errorf("ungültiges host:port format: %w", err)
 	}
 
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum < 1 || portNum > 65535 {
-		return ProxyConfig{}, fmt.Errorf("ungültiger port: %s", port)
+	var username, password string
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
 	}
 
-	proxy := ProxyConfig{
+	return ProxyConfig{
+		Protocol: u.Scheme,
 		Host:     host,
 		Port:     port,
-		Protocol: u.Scheme,
+		Username: username,
+		Password: password,
 		Type:     "rotating",
-	}
-
-	if u.User != nil {
-		proxy.Username = u.User.Username()
-		proxy.Password, _ = u.User.Password()
-	}
-
-	return proxy, nil
+	}, nil
 }
 
-func parseProxyList(input string) ([]ProxyConfig, error) {
-	if strings.TrimSpace(input) == "" {
-		return nil, fmt.Errorf("keine proxy-daten eingegeben")
-	}
-
+func parseProxyList(proxyText string) ([]ProxyConfig, error) {
+	lines := strings.Split(proxyText, "\n")
 	var proxies []ProxyConfig
-	lines := strings.Split(input, "\n")
-	var errors []string
 
-	for i, line := range lines {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		proxy, err := parseProxyURL(line)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("Zeile %d: %v", i+1, err))
-			continue
+		if strings.Contains(line, "://") {
+			proxy, err := parseProxyURL(line)
+			if err != nil {
+				continue
+			}
+			proxies = append(proxies, proxy)
+		} else {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				proxies = append(proxies, ProxyConfig{
+					Protocol: "socks5",
+					Host:     parts[0],
+					Port:     parts[1],
+					Type:     "rotating",
+				})
+			}
 		}
-
-		proxies = append(proxies, proxy)
-	}
-
-	if len(errors) > 0 {
-		return proxies, fmt.Errorf("fehler beim parsen von %d zeilen:\n%s", len(errors), strings.Join(errors, "\n"))
 	}
 
 	if len(proxies) == 0 {
@@ -97,54 +89,63 @@ func parseProxyList(input string) ([]ProxyConfig, error) {
 }
 
 func loadProxiesFromFile(filename string) ([]ProxyConfig, error) {
-	if filename == "" {
-		return nil, fmt.Errorf("kein dateiname angegeben")
-	}
-
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		return nil, fmt.Errorf("datei existiert nicht: %s", filename)
-	}
-
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("fehler beim lesen der datei: %w", err)
 	}
 
-	if len(data) == 0 {
-		return nil, fmt.Errorf("datei ist leer")
-	}
-
-	content := strings.TrimSpace(string(data))
-	if strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
-		var config Config
-		err := json.Unmarshal(data, &config)
-		if err != nil {
-			return nil, fmt.Errorf("fehler beim parsen der JSON-datei: %w", err)
+	if strings.HasSuffix(filename, ".json") {
+		var config struct {
+			Proxies []ProxyConfig `json:"proxies"`
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, fmt.Errorf("fehler beim parsen der json-datei: %w", err)
 		}
 		return config.Proxies, nil
 	}
 
-	return parseProxyList(content)
+	return parseProxyList(string(data))
 }
 
 func saveProxiesToFile(proxies []ProxyConfig, filename string) error {
-	if filename == "" {
-		return fmt.Errorf("kein dateiname angegeben")
+	config := struct {
+		Proxies []ProxyConfig `json:"proxies"`
+	}{
+		Proxies: proxies,
 	}
 
-	if len(proxies) == 0 {
-		return fmt.Errorf("keine proxys zum speichern")
-	}
-
-	config := Config{Proxies: proxies}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("fehler beim erstellen der JSON-daten: %w", err)
+		return fmt.Errorf("fehler beim erstellen der json-daten: %w", err)
 	}
 
 	err = ioutil.WriteFile(filename, data, 0644)
 	if err != nil {
-		return fmt.Errorf("fehler beim schreiben der datei: %w", err)
+		return fmt.Errorf("fehler beim speichern der datei: %w", err)
+	}
+
+	return nil
+}
+
+func validateProxy(proxy ProxyConfig) error {
+	if proxy.Host == "" {
+		return fmt.Errorf("host ist erforderlich")
+	}
+
+	portNum, err := strconv.Atoi(proxy.Port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return fmt.Errorf("ungültiger port: %s", proxy.Port)
+	}
+
+	validProtocols := map[string]bool{
+		"socks5": true,
+		"socks4": true,
+		"http":   true,
+		"https":  true,
+	}
+
+	if !validProtocols[proxy.Protocol] {
+		return fmt.Errorf("ungültiges protokoll: %s", proxy.Protocol)
 	}
 
 	return nil
